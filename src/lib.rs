@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, ops::{Add, Div, Mul, Rem}};
 
 pub trait ParseError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
@@ -101,3 +101,20 @@ parser_impl!(i16, Be, from_be_bytes);
 parser_impl!(i32, Be, from_be_bytes);
 parser_impl!(i64, Be, from_be_bytes);
 parser_impl!(i128, Be, from_be_bytes);
+
+pub fn align<T>(number: T, alignment: T) -> T
+where
+    T: Add<Output = T>
+        + Copy
+        + Div<Output = T>
+        + Rem<Output = T>
+        + From<u8>
+        + Mul<Output = T>
+        + PartialEq,
+{
+    (if number % alignment != T::from(0u8) {
+        number / alignment + T::from(1u8)
+    } else {
+        number / alignment
+    }) * alignment
+}

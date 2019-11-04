@@ -142,16 +142,43 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
     })
 }
 
-fn simple_type(ident: &syn::Ident) -> syn::Type {
+fn pattern(ident: syn::Ident) -> syn::Pat {
+    syn::Pat::Tuple(syn::PatTuple {
+        attrs: vec! [],
+        paren_token: Default::default(),
+        elems: vec! [
+            syn::Pat::Ident(syn::PatIdent {
+                attrs: vec! [],
+                by_ref: None,
+                mutability: None,
+                ident,
+                subpat: None,
+            }),
+            syn::Pat::Ident(syn::PatIdent {
+                attrs: vec! [],
+                by_ref: None,
+                mutability: None,
+                ident: syn::Ident::new("additional_bytes", proc_macro2::Span::call_site()),
+                subpat: None,
+            }),
+        ].into_iter().collect()
+    })
+}
+
+fn simple_path(ident: syn::Ident) -> syn::Path {
+    syn::Path {
+        leading_colon: None,
+        segments: std::iter::once(syn::PathSegment {
+            ident: ident.clone(),
+            arguments: syn::PathArguments::None,
+        }).collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+    }
+}
+
+fn simple_type(ident: syn::Ident) -> syn::Type {
     syn::Type::Path(syn::TypePath {
         qself: None,
-        path: syn::Path {
-            leading_colon: None,
-            segments: std::iter::once(syn::PathSegment {
-                ident: ident.clone(),
-                arguments: syn::PathArguments::None,
-            }).collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
-        },
+        path: simple_path(ident),
     })
 }
 
@@ -200,15 +227,76 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
                             colon2_token: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
                             args: vec! [
                                 syn::GenericArgument::Lifetime(syn::Lifetime::new("'_", proc_macro2::Span::call_site())),
-                                syn::GenericArgument::Type(simple_type(ty))
+                                syn::GenericArgument::Type(simple_type(ty.clone()))
                             ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
                         }),
                     },
-                ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+                ].into_iter().collect(),
             }
         }))),
         paren_token: syn::token::Paren { span: proc_macro2::Span::call_site() },
-        args: Vec::<syn::Expr>::new().into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+        args: vec! [
+            syn::Expr::Tuple(syn::ExprTuple {
+                attrs: vec! [],
+                paren_token: syn::token::Paren {
+                    span: proc_macro2::Span::call_site(),
+                },
+                elems: syn::punctuated::Punctuated::new(),
+            }),
+            syn::Expr::Path(syn::ExprPath {
+                attrs: vec! [],
+                qself: None,
+                path: syn::Path {
+                    leading_colon: None,
+                    segments: std::iter::once(syn::PathSegment {
+                        arguments: syn::PathArguments::None,
+                        ident: syn::Ident::new("bytes", proc_macro2::Span::call_site()),
+                    }).collect(),
+                }
+            })
+        ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+    })
+}
+
+fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
+    syn::Expr::Block(syn::ExprBlock {
+        attrs: vec! [],
+        label: None,
+        block: syn::Block {
+            brace_token: Default::default(),
+            stmts: vec! [
+                syn::Stmt::Local(syn::Local {
+                    attrs: vec! [],
+                    let_token: Default::default(),
+                    init: Some((Default::default(), Box::new(to_wrap.clone()))),
+                    semi_token: Default::default(),
+                    pat: pattern(ident),
+                }),
+                syn::Stmt::Semi(syn::Expr::AssignOp(syn::ExprAssignOp {
+                    attrs: vec! [],
+                    op: syn::BinOp::AddEq(Default::default()),
+                    left: Box::new(syn::Expr::Path(syn::ExprPath {
+                        attrs: vec! [],
+                        qself: None,
+                        path: simple_path(syn::Ident::new("offset", proc_macro2::Span::call_site()))
+                    })),
+                    right: Box::new(syn::Expr::Path(syn::ExprPath {
+                        attrs: vec! [],
+                        qself: None,
+                        path: simple_path(syn::Ident::new("additional_bytes", proc_macro2::Span::call_site()))
+                    }))
+                }), Default::default()),
+                syn::Stmt::Expr(to_wrap),
+            ],
+        },
+    })
+}
+
+fn question_mark_operator_expr(to_wrap: syn::Expr) -> syn::Expr {
+    syn::Expr::Try(syn::ExprTry {
+        attrs: vec! [],
+        expr: Box::new(to_wrap),
+        question_token: Default::default(),
     })
 }
 
@@ -288,28 +376,16 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
         Item::RegularField(field) => syn::Stmt::Local(syn::Local {
             attrs: vec! [],
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
-            pat: syn::Pat::Ident(syn::PatIdent {
-                attrs: vec! [],
-                by_ref: None,
-                mutability: None,
-                ident: field.ident.clone().unwrap(),
-                subpat: None,
-            }),
-            init: Some((syn::Token!(=)(proc_macro2::Span::call_site()), Box::new(regular_parser_expr(&field)))),
+            pat: pattern(field.ident.clone().unwrap()),
+            init: Some((syn::Token!(=)(proc_macro2::Span::call_site()), Box::new(offset_incr_expr(field.ident.clone().unwrap(), regular_parser_expr(&field))))),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
         }),
 
         Item::FieldWithEndianness(_, ident, (endianness, ty)) => syn::Stmt::Local(syn::Local {
             attrs: vec! [],
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
-            pat: syn::Pat::Ident(syn::PatIdent {
-                attrs: vec! [],
-                by_ref: None,
-                mutability: None,
-                ident: ident.clone(),
-                subpat: None,
-            }),
-            init: Some((syn::Token!(=)(proc_macro2::Span::call_site()), Box::new(pod_expr(endianness, &ty)))),
+            pat: pattern(ident.clone()),
+            init: Some((syn::Token!(=)(proc_macro2::Span::call_site()), Box::new(offset_incr_expr(ident, question_mark_operator_expr(pod_expr(endianness, &ty)))))),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
         }),
     });
@@ -328,14 +404,14 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             type Data = ();
             type Error = ::sbp::BasicParseError;
 
-            fn parse(_: Self::Data, bytes: &'a [u8]) -> Result<Self, Self::Error> {
+            fn parse(_: Self::Data, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
                 let mut offset = 0;
 
                 #(#declarations)*
 
-                #ident {
+                Ok((#ident {
                     #(#fields_idents,)*
-                }
+                }, offset))
             }
         }
     };

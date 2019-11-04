@@ -1,7 +1,8 @@
-use sbp::Le;
+use sbp::{Le, Parser};
 use sbp_derive::parsable;
 
 #[parsable]
+#[derive(Debug)]
 struct Data {
     flags: Le<u64>,
     block_count: Le<u64>,
@@ -16,4 +17,8 @@ struct Data {
     padded: Le<u128>,
 }
 
-fn main() {}
+fn main() {
+    let bytes = [0u8; std::mem::size_of::<Data>()];
+    let data = Data::parse((), &bytes);
+    dbg!(data);
+}
