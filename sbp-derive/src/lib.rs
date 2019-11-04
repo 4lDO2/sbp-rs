@@ -181,7 +181,7 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
     })
 }
 
-fn pattern(ident: syn::Ident) -> syn::Pat {
+fn pattern() -> syn::Pat {
     syn::Pat::Tuple(syn::PatTuple {
         attrs: vec![],
         paren_token: Default::default(),
@@ -190,7 +190,7 @@ fn pattern(ident: syn::Ident) -> syn::Pat {
                 attrs: vec![],
                 by_ref: None,
                 mutability: None,
-                ident,
+                ident: syn::Ident::new("value", proc_macro2::Span::call_site()),
                 subpat: None,
             }),
             syn::Pat::Ident(syn::PatIdent {
@@ -331,11 +331,11 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
                 expr: Box::new(syn::Expr::Index(syn::ExprIndex {
                     attrs: vec! [],
                     bracket_token: Default::default(),
-                    expr: Box::new(simple_expr(syn::Ident::new("bytes", proc_macro2::Span::call_site()))),
+                    expr: Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_bytes", proc_macro2::Span::call_site()))),
                     index: Box::new(syn::Expr::Range(syn::ExprRange {
                         attrs: vec! [],
                         limits: syn::RangeLimits::HalfOpen(Default::default()),
-                        from: Some(Box::new(simple_expr(syn::Ident::new("offset", proc_macro2::Span::call_site())))),
+                        from: Some(Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())))),
                         to: None,
                     })),
                 })),
@@ -361,7 +361,7 @@ fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
                     let_token: Default::default(),
                     init: Some((Default::default(), Box::new(to_wrap.clone()))),
                     semi_token: Default::default(),
-                    pat: pattern(ident.clone()),
+                    pat: pattern(),
                 }),
                 syn::Stmt::Semi(
                     syn::Expr::AssignOp(syn::ExprAssignOp {
@@ -371,7 +371,7 @@ fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
                             attrs: vec![],
                             qself: None,
                             path: simple_path(syn::Ident::new(
-                                "offset",
+                                "__sbp_proc_macro_offset",
                                 proc_macro2::Span::call_site(),
                             )),
                         })),
@@ -386,7 +386,7 @@ fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
                     }),
                     Default::default(),
                 ),
-                syn::Stmt::Expr(simple_expr(ident)),
+                syn::Stmt::Expr(simple_expr(syn::Ident::new("value", proc_macro2::Span::call_site()))),
             ],
         },
     })
@@ -460,7 +460,7 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let offset_expr = Box::new(syn::Expr::Path(syn::ExprPath {
         attrs: vec![],
         qself: None,
-        path: syn::Path::from(syn::Ident::new("offset", proc_macro2::Span::call_site())),
+        path: syn::Path::from(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())),
     }));
 
     let declarations = items.iter().cloned().map(|item| match item {
@@ -503,7 +503,7 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
         Item::RegularField(field) => syn::Stmt::Local(syn::Local {
             attrs: vec![],
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
-            pat: pattern(field.ident.clone().unwrap()),
+            pat: simple_pattern(field.ident.clone().unwrap()),
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
@@ -545,14 +545,14 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             type Data = ();
             type Error = ::sbp::BasicParseError;
 
-            fn parse(_: Self::Data, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
-                let mut offset = 0;
+            fn parse(_: Self::Data, __sbp_proc_macro_bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
+                let mut __sbp_proc_macro_offset = 0;
 
                 #(#declarations)*
 
                 Ok((#ident {
                     #(#fields_idents,)*
-                }, offset))
+                }, __sbp_proc_macro_offset))
             }
         }
     };
