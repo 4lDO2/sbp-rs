@@ -18,7 +18,7 @@ struct Data {
 }
 
 fn main() {
-    let bytes = [0u8; std::mem::size_of::<Data>()];
+    let bytes = [0u8; 56];
     let data = Data::parse((), &bytes);
     dbg!(data);
 }

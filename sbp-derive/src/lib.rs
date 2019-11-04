@@ -206,6 +206,16 @@ fn pattern(ident: syn::Ident) -> syn::Pat {
     })
 }
 
+fn simple_pattern(ident: syn::Ident) -> syn::Pat {
+    syn::Pat::Ident(syn::PatIdent {
+        attrs: vec![],
+        by_ref: None,
+        mutability: None,
+        ident: ident,
+        subpat: None,
+    })
+}
+
 fn simple_path(ident: syn::Ident) -> syn::Path {
     syn::Path {
         leading_colon: None,
@@ -221,6 +231,21 @@ fn simple_type(ident: syn::Ident) -> syn::Type {
     syn::Type::Path(syn::TypePath {
         qself: None,
         path: simple_path(ident),
+    })
+}
+
+fn simple_expr(ident: syn::Ident) -> syn::Expr {
+    syn::Expr::Path(syn::ExprPath {
+        attrs: vec![],
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments: std::iter::once(syn::PathSegment {
+                arguments: syn::PathArguments::None,
+                ident,
+            })
+            .collect(),
+        },
     })
 }
 
@@ -301,17 +326,22 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
                 },
                 elems: syn::punctuated::Punctuated::new(),
             }),
-            syn::Expr::Path(syn::ExprPath {
-                attrs: vec![],
-                qself: None,
-                path: syn::Path {
-                    leading_colon: None,
-                    segments: std::iter::once(syn::PathSegment {
-                        arguments: syn::PathArguments::None,
-                        ident: syn::Ident::new("bytes", proc_macro2::Span::call_site()),
-                    })
-                    .collect(),
-                },
+            syn::Expr::Reference(syn::ExprReference {
+                attrs: vec! [],
+                expr: Box::new(syn::Expr::Index(syn::ExprIndex {
+                    attrs: vec! [],
+                    bracket_token: Default::default(),
+                    expr: Box::new(simple_expr(syn::Ident::new("bytes", proc_macro2::Span::call_site()))),
+                    index: Box::new(syn::Expr::Range(syn::ExprRange {
+                        attrs: vec! [],
+                        limits: syn::RangeLimits::HalfOpen(Default::default()),
+                        from: Some(Box::new(simple_expr(syn::Ident::new("offset", proc_macro2::Span::call_site())))),
+                        to: None,
+                    })),
+                })),
+                mutability: None,
+                and_token: Default::default(),
+                raw: Default::default(),
             }),
         ]
         .into_iter()
@@ -331,7 +361,7 @@ fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
                     let_token: Default::default(),
                     init: Some((Default::default(), Box::new(to_wrap.clone()))),
                     semi_token: Default::default(),
-                    pat: pattern(ident),
+                    pat: pattern(ident.clone()),
                 }),
                 syn::Stmt::Semi(
                     syn::Expr::AssignOp(syn::ExprAssignOp {
@@ -356,7 +386,7 @@ fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
                     }),
                     Default::default(),
                 ),
-                syn::Stmt::Expr(to_wrap),
+                syn::Stmt::Expr(simple_expr(ident)),
             ],
         },
     })
@@ -373,6 +403,8 @@ fn question_mark_operator_expr(to_wrap: syn::Expr) -> syn::Expr {
 #[proc_macro_attribute]
 pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as ItemStruct);
+
+    let attrs = ast.attrs.into_iter();
 
     let items = if let syn::Fields::Named(syn::FieldsNamed { ref named, .. }) = ast.fields {
         named
@@ -485,7 +517,7 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
         Item::FieldWithEndianness(_, ident, (endianness, ty)) => syn::Stmt::Local(syn::Local {
             attrs: vec![],
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
-            pat: pattern(ident.clone()),
+            pat: simple_pattern(ident.clone()),
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
@@ -503,6 +535,8 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let fields_idents = fields.iter().map(|field| &field.ident);
 
     let tokens = quote! {
+        #(#attrs)*
+
         #visibility struct #ident {
             #(#fields,)*
         }

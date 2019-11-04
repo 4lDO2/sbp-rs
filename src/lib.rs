@@ -4,6 +4,7 @@ pub trait ParseError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
 }
 
+#[derive(Debug)]
 pub struct BasicParseError {
     pub bytes_got: usize,
     pub bytes_required: usize,
@@ -70,7 +71,7 @@ macro_rules! parser_impl(
                 }
 
                 let mut array = [0u8; SIZE];
-                array.copy_from_slice(&bytes);
+                array.copy_from_slice(&bytes[..SIZE]);
 
                 Ok((<$target>::$function(array), SIZE))
             }
