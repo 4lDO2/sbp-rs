@@ -17,8 +17,16 @@ struct Data {
     padded: Le<u128>,
 }
 
+#[parsable]
+#[derive(Debug)]
+struct DataPhys {
+    offset: Le<u64>,
+    data: Data,
+}
+
 fn main() {
-    let bytes = [0u8; 56];
-    let data = Data::parse((), &bytes);
+    let mut bytes = [0u8; 64];
+    bytes[..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let data = DataPhys::parse((), &bytes);
     dbg!(data);
 }

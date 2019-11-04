@@ -169,15 +169,81 @@ fn regular_parser_func(ty: &syn::Type) -> syn::Expr {
 
 fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
     // Assume that every type this function is called for is sbp::Parse, rather than sbp::Parser.
+
+    let position = 2;
+
+    let ty = syn::Type::Path(syn::TypePath {
+        qself: Some(syn::QSelf {
+            as_token: Some(syn::Token!(as)(proc_macro2::Span::call_site())),
+            lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
+            gt_token: syn::Token!(>)(proc_macro2::Span::call_site()),
+            ty: Box::new(field.ty.clone()),
+            position,
+        }),
+        path: syn::Path {
+            leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
+            segments: vec![
+                syn::PathSegment {
+                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+                syn::PathSegment {
+                    ident: syn::Ident::new("Parser", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::AngleBracketed(
+                        syn::AngleBracketedGenericArguments {
+                            lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
+                            gt_token: syn::Token!(>)(proc_macro2::Span::call_site()),
+                            colon2_token: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
+                            args: vec![
+                                syn::GenericArgument::Lifetime(syn::Lifetime::new(
+                                    "'_",
+                                    proc_macro2::Span::call_site(),
+                                )),
+                                syn::GenericArgument::Type(field.ty.clone()),
+                            ]
+                            .into_iter()
+                            .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+                        },
+                    ),
+                },
+            ]
+            .into_iter()
+            .collect(),
+        },
+    });
+
     syn::Expr::Call(syn::ExprCall {
         attrs: vec![],
-        func: Box::new(regular_parser_func(&field.ty)),
+        func: Box::new(regular_parser_func(&ty)),
         paren_token: syn::token::Paren {
             span: proc_macro2::Span::call_site(),
         },
-        args: Vec::<syn::Expr>::new()
-            .into_iter()
-            .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+        args: vec! [
+            syn::Expr::Tuple(syn::ExprTuple {
+                attrs: vec![],
+                paren_token: syn::token::Paren {
+                    span: proc_macro2::Span::call_site(),
+                },
+                elems: syn::punctuated::Punctuated::new(),
+            }),
+            syn::Expr::Reference(syn::ExprReference {
+                attrs: vec! [],
+                expr: Box::new(syn::Expr::Index(syn::ExprIndex {
+                    attrs: vec! [],
+                    bracket_token: Default::default(),
+                    expr: Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_bytes", proc_macro2::Span::call_site()))),
+                    index: Box::new(syn::Expr::Range(syn::ExprRange {
+                        attrs: vec! [],
+                        limits: syn::RangeLimits::HalfOpen(Default::default()),
+                        from: Some(Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())))),
+                        to: None,
+                    })),
+                })),
+                mutability: None,
+                and_token: Default::default(),
+                raw: Default::default(),
+            }),
+        ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
     })
 }
 
@@ -349,7 +415,7 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
     })
 }
 
-fn offset_incr_expr(ident: syn::Ident, to_wrap: syn::Expr) -> syn::Expr {
+fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
     syn::Expr::Block(syn::ExprBlock {
         attrs: vec![],
         label: None,
@@ -507,8 +573,7 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
-                    field.ident.clone().unwrap(),
-                    regular_parser_expr(&field),
+                    question_mark_operator_expr(regular_parser_expr(&field)),
                 )),
             )),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
@@ -521,7 +586,6 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
-                    ident,
                     question_mark_operator_expr(pod_expr(endianness, &ty)),
                 )),
             )),
