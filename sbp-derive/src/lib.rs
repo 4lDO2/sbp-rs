@@ -78,6 +78,18 @@ enum Item {
     FieldWithEndianness(syn::Visibility, syn::Ident, (Endianness, syn::Ident)),
     Align(syn::LitInt),
     Pad(syn::LitInt),
+    Conditional(Vec<Item>, syn::Expr),
+}
+
+impl Item {
+    fn ident(&self) -> Option<&syn::Ident> {
+        match self {
+            Self::RegularField(f) => f.ident.as_ref(),
+            Self::FieldWithEndianness(_, i, _) => Some(i),
+            Self::Conditional(items, _) => items.last().map(|item| item.ident().unwrap()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,9 +138,25 @@ fn field_attribute_items(field: &syn::Field) -> Vec<Item> {
         .unwrap()
 }
 
-fn item_from_field(field: syn::Field) -> Vec<Item> {
-    let mut items: Vec<Item> = vec![];
+fn match_field_conditional(field: &mut syn::Field) -> Option<syn::Expr> {
+    let (position, _, tokens) = match field.attrs.iter().enumerate().filter_map(|(idx, attr)| {
+        attr.path.get_ident().map(|ident| (idx, ident, attr.tokens.clone()))
+    }).find(|(_, ident, _)| {
+        ident == &&syn::Ident::new("condition", proc_macro2::Span::call_site())
+    }) {
+        Some(p) => p,
+        None => return None,
+    };
+    field.attrs.remove(position);
+    Some(syn::parse2::<syn::Expr>(tokens).unwrap())
+}
 
+fn item_from_field(mut field: syn::Field) -> Vec<Item> {
+    if let Some(condition) = match_field_conditional(&mut field) {
+        return vec! [Item::Conditional(item_from_field(field), condition)];
+    }
+
+    let mut items: Vec<Item> = vec![];
     items.extend(field_attribute_items(&field));
 
     items.push(
@@ -245,6 +273,77 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
             }),
         ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
     })
+}
+
+fn optionize(ty: syn::Type) -> syn::Type {
+    syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path {
+            leading_colon: Some(Default::default()),
+            segments: vec! [
+                syn::PathSegment {
+                    arguments: syn::PathArguments::None,
+                    ident: syn::Ident::new("core", proc_macro2::Span::call_site()),
+                },
+                syn::PathSegment {
+                    arguments: syn::PathArguments::None,
+                    ident: syn::Ident::new("option", proc_macro2::Span::call_site()),
+                },
+                syn::PathSegment {
+                    arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                        colon2_token: None,
+                        gt_token: Default::default(),
+                        lt_token: Default::default(),
+                        args: vec!(syn::GenericArgument::Type(ty)).into_iter().collect(),
+                    }),
+                    ident: syn::Ident::new("Option", proc_macro2::Span::call_site()),
+                },
+            ].into_iter().collect(),
+        },
+    })
+}
+
+fn item_to_field(item: Item) -> Option<Vec<syn::Field>> {
+    fn inner(item: Item, will_optionize: bool) -> Option<Vec<syn::Field>> {
+        match item {
+            Item::Align(_) => None,
+            Item::Pad(_) => None,
+            Item::FieldWithEndianness(vis, ident, (_, ty)) => Some(vec!(syn::Field {
+                attrs: vec![],
+                ident: Some(ident),
+                vis,
+                ty: if !will_optionize {
+                    syn::Type::Path(syn::TypePath {
+                        qself: None,
+                        path: syn::Path::from(ty),
+                    })
+                } else {
+                    optionize(
+                        syn::Type::Path(syn::TypePath {
+                            qself: None,
+                            path: syn::Path::from(ty),
+                        })
+                    )
+                },
+                colon_token: None,
+            })),
+            Item::RegularField(field) => Some(vec![
+                if !will_optionize {
+                    field
+                } else {
+                    syn::Field {
+                        attrs: field.attrs,
+                        colon_token: field.colon_token,
+                        ident: field.ident,
+                        vis: field.vis,
+                        ty: optionize(field.ty),
+                    }
+                }
+            ]),
+            Item::Conditional(items, _) => Some(items.into_iter().filter_map(|item| inner(item, true)).flatten().collect()),
+        }
+    }
+    inner(item, false)
 }
 
 fn pattern() -> syn::Pat {
@@ -458,78 +557,8 @@ fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
     })
 }
 
-fn question_mark_operator_expr(to_wrap: syn::Expr) -> syn::Expr {
-    syn::Expr::Try(syn::ExprTry {
-        attrs: vec![],
-        expr: Box::new(to_wrap),
-        question_token: Default::default(),
-    })
-}
-
-#[proc_macro_attribute]
-pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as ItemStruct);
-
-    let attrs = ast.attrs.into_iter();
-
-    let items = if let syn::Fields::Named(syn::FieldsNamed { ref named, .. }) = ast.fields {
-        named
-            .iter()
-            .cloned()
-            .map(item_from_field)
-            .flatten()
-            .collect::<Vec<_>>()
-    } else {
-        panic!()
-    };
-
-    let fields = items
-        .iter()
-        .cloned()
-        .filter_map(|item| match item {
-            Item::Align(_) => None,
-            Item::Pad(_) => None,
-            Item::FieldWithEndianness(vis, ident, (_, ty)) => Some(syn::Field {
-                attrs: vec![],
-                ident: Some(ident),
-                vis,
-                ty: syn::Type::Path(syn::TypePath {
-                    qself: None,
-                    path: syn::Path::from(ty),
-                }),
-                colon_token: None,
-            }),
-            Item::RegularField(field) => Some(field),
-        })
-        .collect::<Vec<_>>();
-
-    let align_func = Box::new(syn::Expr::Path(syn::ExprPath {
-        attrs: vec![],
-        qself: None,
-        path: syn::Path {
-            leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
-            segments: vec![
-                syn::PathSegment {
-                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
-                    arguments: syn::PathArguments::None,
-                },
-                syn::PathSegment {
-                    ident: syn::Ident::new("align", proc_macro2::Span::call_site()),
-                    arguments: syn::PathArguments::None,
-                },
-            ]
-            .into_iter()
-            .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
-        },
-    }));
-
-    let offset_expr = Box::new(syn::Expr::Path(syn::ExprPath {
-        attrs: vec![],
-        qself: None,
-        path: syn::Path::from(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())),
-    }));
-
-    let declarations = items.iter().cloned().map(|item| match item {
+fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+    match item {
         Item::Align(alignment) => syn::Stmt::Semi(
             syn::Expr::Assign(syn::ExprAssign {
                 attrs: vec![],
@@ -542,7 +571,7 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
                         span: proc_macro2::Span::call_site(),
                     },
                     args: vec![
-                        (*offset_expr).clone(),
+                        (**offset_expr).clone(),
                         syn::Expr::Lit(syn::ExprLit {
                             lit: syn::Lit::Int(alignment),
                             attrs: vec![],
@@ -591,7 +620,157 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             )),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
         }),
-    });
+
+        Item::Conditional(items, condition) => syn::Stmt::Local(syn::Local {
+            attrs: vec! [],
+            let_token: Default::default(),
+            pat: simple_pattern(Item::Conditional(items.clone(), condition.clone()).ident().unwrap().clone()),
+            semi_token: Default::default(),
+            init: Some((Default::default(), Box::new(conditional_expr(items, condition, offset_expr, align_func)))),
+        }),
+    }
+}
+
+fn conditional_expr(items: Vec<Item>, condition: syn::Expr, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Expr {
+    syn::Expr::If(syn::ExprIf {
+        attrs: vec! [],
+        cond: Box::new(condition),
+        if_token: Default::default(),
+        then_branch: syn::Block {
+            brace_token: Default::default(),
+            stmts: items.iter().cloned().map(|item| {
+                vec! [
+                    item_to_decl(item, offset_expr, align_func),
+                    syn::Stmt::Expr(syn::Expr::Call(syn::ExprCall {
+                        attrs: vec! [],
+                        func: Box::new(syn::Expr::Path(syn::ExprPath {
+                            attrs: vec! [],
+                            qself: None,
+                            path: syn::Path {
+                                leading_colon: Some(Default::default()),
+                                segments: vec! [
+                                    syn::PathSegment {
+                                        arguments: syn::PathArguments::None,
+                                        ident: syn::Ident::new("core", proc_macro2::Span::call_site()),
+                                    },
+                                    syn::PathSegment {
+                                        arguments: syn::PathArguments::None,
+                                        ident: syn::Ident::new("option", proc_macro2::Span::call_site()),
+                                    },
+                                    syn::PathSegment {
+                                        arguments: syn::PathArguments::None,
+                                        ident: syn::Ident::new("Option", proc_macro2::Span::call_site()),
+                                    },
+                                    syn::PathSegment {
+                                        arguments: syn::PathArguments::None,
+                                        ident: syn::Ident::new("Some", proc_macro2::Span::call_site()),
+                                    },
+                                ].into_iter().collect(),
+                            },
+                        })),
+                        paren_token: Default::default(),
+                        args: vec! [
+                            simple_expr(items.last().unwrap().ident().unwrap().clone())
+                        ].into_iter().collect(),
+                    })),
+                ]
+            }).flatten().collect(),
+        },
+        else_branch: Some((Default::default(), Box::new(syn::Expr::Block(syn::ExprBlock {
+            attrs: vec! [],
+            label: None,
+            block: syn::Block {
+                brace_token: Default::default(),
+                stmts: vec![
+                    syn::Stmt::Expr(syn::Expr::Path(syn::ExprPath {
+                        attrs: vec! [],
+                        qself: None,
+                        path: syn::Path {
+                            leading_colon: Some(Default::default()),
+                            segments: vec! [
+                                syn::PathSegment {
+                                    arguments: syn::PathArguments::None,
+                                    ident: syn::Ident::new("core", proc_macro2::Span::call_site()),
+                                },
+                                syn::PathSegment {
+                                    arguments: syn::PathArguments::None,
+                                    ident: syn::Ident::new("option", proc_macro2::Span::call_site()),
+                                },
+                                syn::PathSegment {
+                                    arguments: syn::PathArguments::None,
+                                    ident: syn::Ident::new("Option", proc_macro2::Span::call_site()),
+                                },
+                                syn::PathSegment {
+                                    arguments: syn::PathArguments::None,
+                                    ident: syn::Ident::new("None", proc_macro2::Span::call_site()),
+                                },
+                            ].into_iter().collect(),
+                        },
+                    }))
+                ],
+            },
+        })))),
+    })
+}
+
+fn question_mark_operator_expr(to_wrap: syn::Expr) -> syn::Expr {
+    syn::Expr::Try(syn::ExprTry {
+        attrs: vec![],
+        expr: Box::new(to_wrap),
+        question_token: Default::default(),
+    })
+}
+
+#[proc_macro_attribute]
+pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as ItemStruct);
+
+    let attrs = ast.attrs.into_iter();
+
+    let items = if let syn::Fields::Named(syn::FieldsNamed { ref named, .. }) = ast.fields {
+        named
+            .iter()
+            .cloned()
+            .map(item_from_field)
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        panic!()
+    };
+
+    let fields = items
+        .iter()
+        .cloned()
+        .filter_map(item_to_field).flatten()
+        .collect::<Vec<_>>();
+
+    let align_func = Box::new(syn::Expr::Path(syn::ExprPath {
+        attrs: vec![],
+        qself: None,
+        path: syn::Path {
+            leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
+            segments: vec![
+                syn::PathSegment {
+                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+                syn::PathSegment {
+                    ident: syn::Ident::new("align", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+            ]
+            .into_iter()
+            .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+        },
+    }));
+
+    let offset_expr = Box::new(syn::Expr::Path(syn::ExprPath {
+        attrs: vec![],
+        qself: None,
+        path: syn::Path::from(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())),
+    }));
+
+    let declarations = items.iter().cloned().map(|item| item_to_decl(item, &offset_expr, &align_func));
 
     let ident = &ast.ident;
     let visibility = &ast.vis;

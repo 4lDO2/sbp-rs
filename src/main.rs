@@ -20,13 +20,15 @@ struct Data {
 #[parsable]
 #[derive(Debug)]
 struct DataPhys {
-    offset: Le<u64>,
+    version: Le<u64>,
+
+    #[condition(version >= 1)]
     data: Data,
 }
 
 fn main() {
     let mut bytes = [0u8; 64];
-    bytes[..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    //bytes[..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let data = DataPhys::parse((), &bytes);
     dbg!(data);
 }
