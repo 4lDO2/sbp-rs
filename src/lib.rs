@@ -119,3 +119,67 @@ where
         number / alignment
     }) * alignment
 }
+
+pub enum ParseBitflagsError<T> {
+    InsufficientSize(BasicParseError),
+    InvalidBitmask(T, T),
+}
+
+impl<T> From<BasicParseError> for ParseBitflagsError<T> {
+    fn from(basic: BasicParseError) -> Self {
+        Self::InsufficientSize(basic)
+    }
+}
+
+impl<T> ParseError for ParseBitflagsError<T> {
+    fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
+        match self {
+            Self::InsufficientSize(err) => err.additional_required_bytes(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "bitflags")]
+#[macro_export]
+macro_rules! parsable_bitflags(
+    {
+        __impl impl, $name:ident, $target:ty
+    } => {
+        impl<'a> ::sbp::Parser<'a, $name> for $name {
+            type Data = ();
+            type Error = ::sbp::ParseBitflagsError<$target>;
+
+            fn parse(data: Self::Data, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
+                // TODO: Configurable endianness.
+                let (raw, size) = <::sbp::Le as ::sbp::Parser<'a, $target>>::parse((), bytes)?;
+                Self::from_bits(raw).map(|this| (this, size)).ok_or(::sbp::ParseBitflagsError::<$target>::InvalidBitmask(raw, Self::all().bits()))
+            }
+        }
+        impl<'a> ::sbp::Parse<'a> for $name {}
+    };
+    {
+        pub struct $name:ident: $repr:ty {
+            $($body:tt)+
+        }
+    } => {
+        bitflags! {
+            pub struct $name: $repr {
+                $($body)+
+            }
+        }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr }
+    };
+    {
+        struct $name:ident: $repr:ty {
+            $($body:tt)+
+        }
+    } => {
+        bitflags! {
+            struct $name: $repr {
+                $($body)+
+            }
+        }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr }
+    };
+);
