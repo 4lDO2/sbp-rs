@@ -39,18 +39,21 @@ pub trait ParseKnownSize<'a>: ParserKnownSize<'a, Self> + Parse<'a> {}
 
 pub struct Take(usize);
 
-impl<'a> Parser<'a, &'a [u8]> for Take {
+impl<'a, T> Parser<'a, T> for Take
+where
+    T: From<&'a [u8]>
+{
     type Error = BasicParseError;
     type Data = usize;
 
-    fn parse(amount: usize, bytes: &'a [u8]) -> Result<(&[u8], usize), Self::Error> {
+    fn parse(amount: usize, bytes: &'a [u8]) -> Result<(T, usize), Self::Error> {
         if bytes.len() < amount {
             return Err(BasicParseError {
                 bytes_got: bytes.len(),
                 bytes_required: amount,
             });
         }
-        Ok((&bytes[..amount], amount))
+        Ok((T::from(&bytes[..amount]), amount))
     }
 }
 

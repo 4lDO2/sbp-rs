@@ -79,6 +79,7 @@ enum Item {
     Align(syn::LitInt),
     Pad(syn::LitInt),
     Conditional(Vec<Item>, syn::Expr),
+    CustomParsed(syn::Field, syn::Type, syn::Expr),
 }
 
 impl Item {
@@ -95,41 +96,31 @@ impl Item {
 #[derive(Debug)]
 struct AttrParseError;
 
+fn parse_number(tokens: &proc_macro2::TokenStream) -> Result<syn::LitInt, AttrParseError> {
+    let group = syn::parse2::<proc_macro2::Group>(tokens.clone())
+        .map_err(|_| AttrParseError)?;
+
+    if let syn::Lit::Int(int) =
+        syn::parse2::<syn::Lit>(group.stream()).map_err(|_| AttrParseError)?
+    {
+        Ok(int)
+    } else {
+        return Err(AttrParseError);
+    }
+}
+
 fn field_attribute_items(field: &syn::Field) -> Vec<Item> {
     field
         .attrs
         .iter()
         .map(|attr| {
-            let segments = match attr.path {
-                syn::Path {
-                    leading_colon: None,
-                    ref segments,
-                } => segments,
-                _ => return Err(AttrParseError),
-            };
+            let attr_path_ident = attr.path.get_ident().ok_or(AttrParseError)?;
 
-            if segments.len() != 1 {
-                return Err(AttrParseError);
-            }
-
-            let group = syn::parse2::<proc_macro2::Group>(attr.tokens.clone())
-                .map_err(|_| AttrParseError)?;
-
-            let number = if let syn::Lit::Int(int) =
-                syn::parse2::<syn::Lit>(group.stream()).map_err(|_| AttrParseError)?
+            if attr_path_ident == &syn::Ident::new("align", proc_macro2::Span::call_site()) {
+                Ok(Item::Align(parse_number(&attr.tokens)?))
+            } else if attr_path_ident == &syn::Ident::new("pad", proc_macro2::Span::call_site())
             {
-                int
-            } else {
-                return Err(AttrParseError);
-            };
-
-            let first_segment = segments.first().unwrap();
-
-            if first_segment.ident == syn::Ident::new("align", proc_macro2::Span::call_site()) {
-                Ok(Item::Align(number))
-            } else if first_segment.ident == syn::Ident::new("pad", proc_macro2::Span::call_site())
-            {
-                Ok(Item::Pad(number))
+                Ok(Item::Pad(parse_number(&attr.tokens)?))
             } else {
                 Err(AttrParseError)
             }
@@ -151,9 +142,45 @@ fn match_field_conditional(field: &mut syn::Field) -> Option<syn::Expr> {
     Some(syn::parse2::<syn::Expr>(tokens).unwrap())
 }
 
+fn match_field_custom(field: &mut syn::Field) -> Option<(syn::Type, syn::Expr)> {
+    let (position, _, tokens) = match field.attrs.iter().enumerate().filter_map(|(idx, attr)| {
+        attr.path.get_ident().map(|ident| (idx, ident, attr.tokens.clone()))
+    }).find(|(_, ident, _)| {
+        ident == &&syn::Ident::new("custom", proc_macro2::Span::call_site())
+    }) {
+        Some(p) => p,
+        None => return None,
+    };
+    field.attrs.remove(position);
+
+    let tuple = syn::parse2::<syn::ExprTuple>(tokens).unwrap();
+    let mut iterator = tuple.elems.into_pairs().map(syn::punctuated::Pair::into_value);
+
+    let path = if let Some(syn::Expr::Path(syn::ExprPath { path, .. })) = iterator.next() {
+        syn::Type::Path(syn::TypePath {
+            qself: None,
+            path,
+        })
+    } else {
+        return None;
+    };
+
+    let data_expr = if let Some(data_expr) = iterator.next() {
+        data_expr
+    } else {
+        return None;
+    };
+
+    if iterator.next() != None { return None; }
+
+    Some((path, data_expr))
+}
+
 fn item_from_field(mut field: syn::Field) -> Vec<Item> {
     if let Some(condition) = match_field_conditional(&mut field) {
         return vec! [Item::Conditional(item_from_field(field), condition)];
+    } else if let Some((ty, data)) = match_field_custom(&mut field) {
+        return vec! [Item::CustomParsed(field, ty, data)];
     }
 
     let mut items: Vec<Item> = vec![];
@@ -195,7 +222,22 @@ fn regular_parser_func(ty: &syn::Type) -> syn::Expr {
     })
 }
 
-fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
+fn empty_tuple() -> syn::Expr {
+    syn::Expr::Tuple(syn::ExprTuple {
+        attrs: vec![],
+        paren_token: Default::default(),
+        elems: syn::punctuated::Punctuated::new(),
+    })
+}
+
+fn regular_parser_expr(field: syn::Field) -> syn::Expr {
+    generic_parser_expr(
+        field.ty.clone(), field.ty,
+        empty_tuple(),
+    )
+}
+
+fn generic_parser_expr(parser_type: syn::Type, target_type: syn::Type, data_expr: syn::Expr) -> syn::Expr {
     // Assume that every type this function is called for is sbp::Parse, rather than sbp::Parser.
 
     let position = 2;
@@ -205,7 +247,7 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
             as_token: Some(syn::Token!(as)(proc_macro2::Span::call_site())),
             lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
             gt_token: syn::Token!(>)(proc_macro2::Span::call_site()),
-            ty: Box::new(field.ty.clone()),
+            ty: Box::new(parser_type),
             position,
         }),
         path: syn::Path {
@@ -227,7 +269,7 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
                                     "'_",
                                     proc_macro2::Span::call_site(),
                                 )),
-                                syn::GenericArgument::Type(field.ty.clone()),
+                                syn::GenericArgument::Type(target_type),
                             ]
                             .into_iter()
                             .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
@@ -247,13 +289,7 @@ fn regular_parser_expr(field: &syn::Field) -> syn::Expr {
             span: proc_macro2::Span::call_site(),
         },
         args: vec! [
-            syn::Expr::Tuple(syn::ExprTuple {
-                attrs: vec![],
-                paren_token: syn::token::Paren {
-                    span: proc_macro2::Span::call_site(),
-                },
-                elems: syn::punctuated::Punctuated::new(),
-            }),
+            data_expr,
             syn::Expr::Reference(syn::ExprReference {
                 attrs: vec! [],
                 expr: Box::new(syn::Expr::Index(syn::ExprIndex {
@@ -341,6 +377,7 @@ fn item_to_field(item: Item) -> Option<Vec<syn::Field>> {
                 }
             ]),
             Item::Conditional(items, _) => Some(items.into_iter().filter_map(|item| inner(item, true)).flatten().collect()),
+            Item::CustomParsed(field, _, _) => Some(vec!(field)),
         }
     }
     inner(item, false)
@@ -414,7 +451,38 @@ fn simple_expr(ident: syn::Ident) -> syn::Expr {
     })
 }
 
-fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
+fn pod_expr(endianness: Endianness, ty: syn::Ident) -> syn::Expr {
+    generic_parser_expr(
+        syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
+                segments: vec![
+                    syn::PathSegment {
+                        ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
+                        arguments: syn::PathArguments::None,
+                    },
+                    syn::PathSegment {
+                        ident: syn::Ident::new(
+                            match endianness {
+                                Endianness::Big => "Be",
+                                Endianness::Little => "Le",
+                            },
+                            proc_macro2::Span::call_site(),
+                        ),
+                        arguments: syn::PathArguments::None,
+                    },
+                ]
+                .into_iter()
+                .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+            },
+        }),
+        simple_type(ty),
+        empty_tuple(),
+    )
+}
+
+/*fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
     // plain old data type expression
     syn::Expr::Call(syn::ExprCall {
         attrs: vec![],
@@ -423,30 +491,7 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
                 as_token: Some(syn::Token!(as)(proc_macro2::Span::call_site())),
                 lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
                 gt_token: syn::Token!(>)(proc_macro2::Span::call_site()),
-                ty: Box::new(syn::Type::Path(syn::TypePath {
-                    qself: None,
-                    path: syn::Path {
-                        leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
-                        segments: vec![
-                            syn::PathSegment {
-                                ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
-                                arguments: syn::PathArguments::None,
-                            },
-                            syn::PathSegment {
-                                ident: syn::Ident::new(
-                                    match endianness {
-                                        Endianness::Big => "Be",
-                                        Endianness::Little => "Le",
-                                    },
-                                    proc_macro2::Span::call_site(),
-                                ),
-                                arguments: syn::PathArguments::None,
-                            },
-                        ]
-                        .into_iter()
-                        .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
-                    },
-                })),
+                ty: ,
                 position: 2,
             }),
             path: syn::Path {
@@ -513,6 +558,7 @@ fn pod_expr(endianness: Endianness, ty: &syn::Ident) -> syn::Expr {
         .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
     })
 }
+*/
 
 fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
     syn::Expr::Block(syn::ExprBlock {
@@ -602,7 +648,20 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
-                    question_mark_operator_expr(regular_parser_expr(&field)),
+                    question_mark_operator_expr(regular_parser_expr(field)),
+                )),
+            )),
+            semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
+        }),
+
+        Item::CustomParsed(field, parser_type, data_expr) => syn::Stmt::Local(syn::Local {
+            attrs: vec![],
+            let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
+            pat: simple_pattern(field.ident.unwrap()),
+            init: Some((
+                syn::Token!(=)(proc_macro2::Span::call_site()),
+                Box::new(offset_incr_expr(
+                    question_mark_operator_expr(generic_parser_expr(parser_type, field.ty, data_expr)),
                 )),
             )),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
@@ -615,7 +674,7 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(
-                    question_mark_operator_expr(pod_expr(endianness, &ty)),
+                    question_mark_operator_expr(pod_expr(endianness, ty)),
                 )),
             )),
             semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
