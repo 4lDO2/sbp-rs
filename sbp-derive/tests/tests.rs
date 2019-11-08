@@ -3,14 +3,14 @@ use sbp_derive::sbp;
 
 #[test]
 fn custom_parsing() {
-    #[sbp(parsable)]
+    #[sbp(parsable, serializable)]
     struct Struct {
         a: Le<u64>,
         b: Be<u32>,
         c: Be<i32>,
         len: Le<u16>,
 
-        #[custom(Take, len as usize)]
+        #[custom(Take, *len as usize)]
         bytes: Vec<u8>,
     }
     let string = b"Hello, world!";
@@ -30,6 +30,10 @@ fn custom_parsing() {
     assert_eq!(s.b, 0x10111213);
     assert_eq!(s.c, -1);
     assert_eq!(s.bytes, string);
+
+    let mut bytes2 = vec! [0u8; bytes.len()];
+    Struct::serialize(&s, (), &mut bytes2);
+    assert_eq!(bytes, bytes2);
 }
 
 #[test]
@@ -83,10 +87,10 @@ fn conditional() {
         #[align(4)]
         version: Le<u32>,
 
-        #[condition(version >= 1)]
+        #[condition(*version >= 1)]
         extra_features: Be<u64>,
 
-        #[condition(version >= 2)]
+        #[condition(*version >= 2)]
         extra_extra_features: Be<u64>,
     }
 
@@ -185,10 +189,10 @@ fn conditional_serializing() {
         #[align(4)]
         version: Le<u32>,
 
-        #[condition(version >= 1)]
+        #[condition(*version >= 1)]
         extra_features: Be<u64>,
 
-        #[condition(version >= 2)]
+        #[condition(*version >= 2)]
         extra_extra_features: Be<u64>,
     }
 

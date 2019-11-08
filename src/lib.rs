@@ -58,6 +58,25 @@ where
     }
 }
 
+impl<'a, T> Serializer<'a, T> for Take
+where
+    for<'b> &'b T: AsRef<[u8]>,
+{
+    type Error = BasicOutOfSpaceError;
+    type Meta = usize;
+
+    fn serialize(this: &T, amount: usize, bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
+        if bytes.len() < amount {
+            return Err(BasicOutOfSpaceError {
+                bytes_got: bytes.len(),
+                bytes_required: amount,
+            });
+        }
+        bytes[..amount].copy_from_slice(this.as_ref());
+        Ok(amount)
+    }
+}
+
 pub trait Serializer<'a, T> {
     type Meta;
     type Error: OutOfSpaceError;
