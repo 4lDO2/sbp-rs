@@ -25,7 +25,22 @@ fn parsable_bitflags_invocation() {
 
     let (parsed, len) = Struct::parse((), &bytes).unwrap();
     assert_eq!(len, 4);
-    assert_eq!(parsed, Struct::A | Struct::B | Struct::C | Struct::D | Struct::E | Struct::F | Struct::G | Struct::H | Struct::I | Struct::J | Struct::K | Struct::L | Struct::M );
+    assert_eq!(
+        parsed,
+        Struct::A
+            | Struct::B
+            | Struct::C
+            | Struct::D
+            | Struct::E
+            | Struct::F
+            | Struct::G
+            | Struct::H
+            | Struct::I
+            | Struct::J
+            | Struct::K
+            | Struct::L
+            | Struct::M
+    );
 
     let mut bytes2 = [0u8; 4];
     Struct::serialize(&parsed, (), &mut bytes2).unwrap();

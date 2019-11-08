@@ -1215,6 +1215,64 @@ fn serializable(input: TokenStream) -> TokenStream {
     tokens.into()
 }
 
+/// A procedural macro for declaring compound structures that can be parsed and serialized.
+///
+/// ## Usage
+/// The `sbp` macro takes either the form `#[sbp(parsable)]` or `#[sbp(parsable, serializable)]`,
+/// where the former declares a struct implementing `Parser<Target=Self> + Parse` and the latter declares a
+/// struct implementing `Serializer<Target=Self> + Serialize`.
+///
+/// The struct is simply written as regular Rust structs, but since the primitive integers don't
+/// implement `Parse` or `Serialize`, those fields will have the type similar to `Le<u64>` or
+/// `Be<u128>`. The field may be prefixed with `#[align(X)]`, `#[pad(X)]`, `#[condition(X)]` or
+/// `#[custom(X, Y)]`.
+///
+/// ### `#[align(<alignment>)]`
+/// Aligns the following field to the specified alignment.
+///
+/// ### `#[pad(<padding>)]`
+/// Advances the internal counter by the specified padding.
+///
+/// ### `#[condition(<conditional expression>)]`
+/// Parses or serializes the following field if the condition is true, and wraps the field in an
+/// `Option`. Internal struct fields are accessible, but borrowed when used.
+///
+/// ### `#[custom(<parser type>, <meta>)]`
+/// Applies a custom parser with the target type being the type of the following field. The meta is
+/// forwarded directly into the parse or serialize functions, and can be used to e.g. specify the
+/// amount of bytes to take when using `Take`. The type pointed to must implement `Parser` if the
+/// `sbp` macro is called with `parsable`, and `Serialize` if it's called with `serializable` as
+/// well.
+///
+/// ## Example
+/// ```rust
+/// # use sbp::{sbp, Parser};
+/// # fn read_from_disk(len: usize) -> Result<Box<[u8]>, Box<dyn std::error::Error>> {
+/// # Ok(vec![0u8; len].into_boxed_slice())
+/// # }
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #[sbp(parsable, serializable)]
+/// pub struct SomeBinaryFormat {
+///     magic: Le<u64>,
+///     node_count: Le<u8>,
+///     len: Le<u32>,
+///
+///     #[align(8)]
+///     version: Le<u64>,
+///     
+///     #[condition(*version > 0)]
+///     uuid: Be<u128>,
+/// }
+/// let count = 36;
+/// let bytes = read_from_disk(count)?;
+///
+/// let (s, _len) = SomeBinaryFormat::parse((), &bytes)?;
+/// if s.version > 0 {
+///     assert_eq!(s.uuid, None);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[proc_macro_attribute]
 pub fn sbp(attr: TokenStream, input: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

@@ -24,7 +24,11 @@ pub struct BasicOutOfSpaceError {
 
 impl std::fmt::Display for BasicOutOfSpaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "expected {} bytes, got {}", self.bytes_required, self.bytes_got)
+        write!(
+            f,
+            "expected {} bytes, got {}",
+            self.bytes_required, self.bytes_got
+        )
     }
 }
 impl std::error::Error for BasicOutOfSpaceError {}
@@ -57,7 +61,11 @@ pub trait ParserKnownSize<'a, Target>: Parser<'a, Target> {
 }
 
 /// A type that can parse itself.
-pub trait Parse<'a>: Parser<'a, Self> where Self: Sized {}
+pub trait Parse<'a>: Parser<'a, Self>
+where
+    Self: Sized,
+{
+}
 
 /// A type that can parse itself, and with a static size.
 pub trait ParseKnownSize<'a>: ParserKnownSize<'a, Self> + Parse<'a> {}
@@ -115,7 +123,11 @@ pub trait Serializer<'a, T> {
 }
 
 /// A type that can serialize itself.
-pub trait Serialize<'a>: Serializer<'a, Self> where Self: Sized {}
+pub trait Serialize<'a>: Serializer<'a, Self>
+where
+    Self: Sized,
+{
+}
 
 /// A type which requires a static (known at compile-time) amount of bytes for serializing to.
 pub trait SerializerKnownLength<'a, T>: Serializer<'a, T> {
@@ -123,7 +135,11 @@ pub trait SerializerKnownLength<'a, T>: Serializer<'a, T> {
 }
 
 /// A type that can serialize itself and has a static raw size.
-pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a> where Self: Sized {}
+pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a>
+where
+    Self: Sized,
+{
+}
 
 /// A parser for parsing unsigned and signed integers, stored in little-endian.
 ///
@@ -232,7 +248,11 @@ impl<T: std::fmt::LowerHex> std::fmt::Display for ParseBitflagsError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::InsufficientSize(error) => std::fmt::Display::fmt(&error, f),
-            Self::InvalidBitmask(got, expected) => write!(f, "invalid bitmask, bitmask 0x{:x} wasn't contained in 0x{:x}", got, expected),
+            Self::InvalidBitmask(got, expected) => write!(
+                f,
+                "invalid bitmask, bitmask 0x{:x} wasn't contained in 0x{:x}",
+                got, expected
+            ),
         }
     }
 }
@@ -369,4 +389,3 @@ macro_rules! parsable_bitflags(
         ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Be }
     };
 );
-
