@@ -652,7 +652,7 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
     }
 }
 
-fn generic_serialize(field_ident: syn::Ident, serializer_type: syn::Type, target_type: syn::Type, meta_expr: syn::Expr) -> syn::Expr {
+fn generic_serialize(field_ident: syn::Ident, serializer_type: syn::Type, target_type: syn::Type, meta_expr: syn::Expr, unwrap: bool) -> syn::Expr {
     let ty = parser_or_serializer_as_trait(serializer_type, syn::Ident::new("Serializer", proc_macro2::Span::call_site()), target_type);
 
     let field_expr = syn::Expr::Field(syn::ExprField {
@@ -662,13 +662,17 @@ fn generic_serialize(field_ident: syn::Ident, serializer_type: syn::Type, target
         member: syn::Member::Named(field_ident),
     });
 
-    let field_ref_expr = syn::Expr::Reference(syn::ExprReference {
-        and_token: Default::default(),
-        attrs: vec! [],
-        expr: Box::new(field_expr),
-        mutability: None,
-        raw: Default::default(),
-    });
+    let field_ref_expr = if !unwrap {
+        syn::Expr::Reference(syn::ExprReference {
+            and_token: Default::default(),
+            attrs: vec! [],
+            expr: Box::new(field_expr),
+            mutability: None,
+            raw: Default::default(),
+        })
+    } else {
+        syn::parse2(quote! { #field_expr.as_ref().unwrap() }).unwrap()
+    };
 
     question_mark_operator_expr(syn::Expr::Call(syn::ExprCall {
         attrs: vec![],
@@ -698,54 +702,61 @@ fn generic_serialize(field_ident: syn::Ident, serializer_type: syn::Type, target
     }))
 }
 
-fn field_with_endianness_stmt(ident: syn::Ident, endianness: Endianness, ty: syn::Ident, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+fn field_with_endianness_stmt(ident: syn::Ident, endianness: Endianness, ty: syn::Ident, offset_expr: &Box<syn::Expr>, unwrap: bool) -> syn::Stmt {
     syn::Stmt::Semi(syn::Expr::AssignOp(syn::ExprAssignOp {
         attrs: vec! [],
         left: offset_expr.clone(),
         op: syn::BinOp::AddEq(Default::default()),
-        right: Box::new(generic_serialize(ident, pod_combinator_type(endianness), simple_type(ty), empty_tuple())),
+        right: Box::new(generic_serialize(ident, pod_combinator_type(endianness), simple_type(ty), empty_tuple(), unwrap)),
     }), Default::default())
 }
 
-fn regular_field_stmt(field: syn::Field, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+fn regular_field_stmt(field: syn::Field, offset_expr: &Box<syn::Expr>, unwrap: bool) -> syn::Stmt {
     syn::Stmt::Expr(syn::Expr::AssignOp(syn::ExprAssignOp {
         attrs: vec! [],
         left: offset_expr.clone(),
         op: syn::BinOp::AddEq(Default::default()),
-        right: Box::new(generic_serialize(field.ident.unwrap(), field.ty.clone(), field.ty, empty_tuple())),
+        right: Box::new(generic_serialize(field.ident.unwrap(), field.ty.clone(), field.ty, empty_tuple(), unwrap)),
     }))
 }
 
-fn custom_parsed_stmt(field: syn::Field, parser: syn::Type, meta_expr: syn::Expr, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+fn custom_parsed_stmt(field: syn::Field, parser: syn::Type, meta_expr: syn::Expr, offset_expr: &Box<syn::Expr>, unwrap: bool) -> syn::Stmt {
     syn::Stmt::Expr(syn::Expr::AssignOp(syn::ExprAssignOp {
         attrs: vec! [],
         left: offset_expr.clone(),
         op: syn::BinOp::AddEq(Default::default()),
-        right: Box::new(generic_serialize(field.ident.unwrap(), parser, field.ty, meta_expr)),
+        right: Box::new(generic_serialize(field.ident.unwrap(), parser, field.ty, meta_expr, unwrap)),
     }))
 }
 
-fn conditional_stmt(items: Vec<Item>, cond: syn::Expr, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+fn conditional_stmt<'a>(items: Vec<Item>, cond: syn::Expr, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>, field_idents: &Vec<syn::Ident>) -> syn::Stmt {
+    let field_exprs = field_idents.iter().cloned().map(simple_expr);
+
     syn::Stmt::Expr(syn::Expr::If(syn::ExprIf {
         attrs: vec! [],
-        cond: Box::new(cond),
+        cond: Box::new(syn::parse2(quote! {
+            {
+                #(let #field_exprs = __sbp_proc_macro_data.#field_exprs;)*
+                #cond
+            }
+        }).unwrap()),
         else_branch: None,
         if_token: Default::default(),
         then_branch: syn::Block {
             brace_token: Default::default(),
-            stmts: items.into_iter().map(|item| item_to_stmt(item, offset_expr, align_func)).collect(),
+            stmts: items.into_iter().map(|item| item_to_stmt(item, offset_expr, align_func, field_idents, true)).collect(),
         },
     }))
 }
 
-fn item_to_stmt(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+fn item_to_stmt<'a>(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>, field_idents: &Vec<syn::Ident>, unwrap: bool) -> syn::Stmt {
     match item {
         Item::Align(alignment) => align_stmt(alignment, offset_expr, align_func),
         Item::Pad(padding) => pad_stmt(padding, offset_expr),
-        Item::FieldWithEndianness(_, ident, (endianness, ty)) => field_with_endianness_stmt(ident, endianness, ty, offset_expr),
-        Item::RegularField(field) => regular_field_stmt(field, offset_expr),
-        Item::CustomParsed(field, parser, meta_expr) => custom_parsed_stmt(field, parser, meta_expr, offset_expr),
-        Item::Conditional(items, cond) => conditional_stmt(items, cond, offset_expr, align_func),
+        Item::FieldWithEndianness(_, ident, (endianness, ty)) => field_with_endianness_stmt(ident, endianness, ty, offset_expr, unwrap),
+        Item::RegularField(field) => regular_field_stmt(field, offset_expr, unwrap),
+        Item::CustomParsed(field, parser, meta_expr) => custom_parsed_stmt(field, parser, meta_expr, offset_expr, unwrap),
+        Item::Conditional(items, cond) => conditional_stmt(items, cond, offset_expr, align_func, field_idents),
     }
 }
 
@@ -934,12 +945,20 @@ fn serializable(input: TokenStream) -> TokenStream {
             .collect::<Vec<_>>()
     } else {
         panic!()
+
     };
+    let fields = items
+        .iter()
+        .cloned()
+        .filter_map(item_to_field).flatten()
+        .collect::<Vec<_>>();
+
+    let fields_idents = fields.iter().cloned().map(|field| field.ident.unwrap()).collect::<Vec<_>>();
 
     let align_func = align_func();
     let offset_expr = Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())));
 
-    let statements = items.into_iter().map(|item| item_to_stmt(item, &offset_expr, &align_func));
+    let statements = items.into_iter().map(|item| item_to_stmt(item, &offset_expr, &align_func, &fields_idents, false));
 
     let tokens = quote! {
         impl<'a> ::sbp::Serializer<'a, #ident> for #ident {
