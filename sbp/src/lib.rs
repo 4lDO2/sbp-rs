@@ -1,4 +1,7 @@
-use std::{num::NonZeroUsize, ops::{Add, Div, Mul, Rem}};
+use std::{
+    num::NonZeroUsize,
+    ops::{Add, Div, Mul, Rem},
+};
 
 pub trait OutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
@@ -42,7 +45,7 @@ pub struct Take(usize);
 
 impl<'a, T> Parser<'a, T> for Take
 where
-    T: From<&'a [u8]>
+    T: From<&'a [u8]>,
 {
     type Error = BasicOutOfSpaceError;
     type Meta = usize;
@@ -84,12 +87,20 @@ pub trait Serializer<'a, T> {
     fn serialize(data: &T, meta: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error>;
 }
 
-pub trait Serialize<'a>: Serializer<'a, Self> where Self: Sized {}
+pub trait Serialize<'a>: Serializer<'a, Self>
+where
+    Self: Sized,
+{
+}
 
 pub trait SerializerKnownLength<'a, T>: Serializer<'a, T> {
     const LEN: usize;
 }
-pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a> where Self: Sized {}
+pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a>
+where
+    Self: Sized,
+{
+}
 
 pub struct Le;
 pub struct Be;

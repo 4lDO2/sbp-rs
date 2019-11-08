@@ -16,11 +16,24 @@ fn custom_parsing() {
     let string = b"Hello, world!";
 
     let mut bytes = vec![
-        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, // a
-        0x10, 0x11, 0x12, 0x13, // b
-        0xFF, 0xFF, 0xFF, 0xFF, // c
-
-        string.len() as u8, 0x00, // len
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60,
+        0x70,
+        0x80, // a
+        0x10,
+        0x11,
+        0x12,
+        0x13, // b
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF, // c
+        string.len() as u8,
+        0x00, // len
     ];
     bytes.extend(string);
 
@@ -31,8 +44,8 @@ fn custom_parsing() {
     assert_eq!(s.c, -1);
     assert_eq!(s.bytes, string);
 
-    let mut bytes2 = vec! [0u8; bytes.len()];
-    Struct::serialize(&s, (), &mut bytes2);
+    let mut bytes2 = vec![0u8; bytes.len()];
+    Struct::serialize(&s, (), &mut bytes2).unwrap();
     assert_eq!(bytes, bytes2);
 }
 
@@ -55,17 +68,12 @@ fn alignment() {
     let bytes = [
         0x08, // eight
         0xFF, // alignment
-
         0x10, 0x00, // sixteen
         0xDE, 0xAD, 0xBE, 0xEF, // be
-
         // alignment
-        0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF,
-
-        // some_bytes_after
-        0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xD0, 0xFA, 0xCE,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // some_bytes_after
+        0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xD0, 0xFA, 0xCE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xF0,
     ];
 
     let (s, len) = Struct::parse((), &bytes).unwrap();
@@ -99,58 +107,64 @@ fn conditional() {
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x00, 0x00, 0x00, 0x00, // version
         ];
 
         let (s, len) = Struct::parse((), &obsolete_bytes).unwrap();
         assert_eq!(len, 12);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 0,
-            extra_features: None,
-            extra_extra_features: None,
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 0,
+                extra_features: None,
+                extra_extra_features: None,
+            }
+        );
     }
     {
         let stable_bytes = [
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x01, 0x00, 0x00, 0x00, // version
             0x00, 0x22, 0x44, 0x66, 0x88, 0xAA, 0xCC, 0xEE, // extra_features
         ];
         let (s, len) = Struct::parse((), &stable_bytes).unwrap();
         assert_eq!(len, 20);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 1,
-            extra_features: Some(0x0022446688AACCEE),
-            extra_extra_features: None,
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 1,
+                extra_features: Some(0x0022446688AACCEE),
+                extra_extra_features: None,
+            }
+        );
     }
     {
         let bleeding_edge_bytes = [
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x00, 0x00, 0x00, 0xF0, // version
             0x00, 0x22, 0x44, 0x66, 0x88, 0xAA, 0xCC, 0xEE, // extra_features
             0x11, 0x33, 0x55, 0x77, 0x99, 0xBB, 0xDD, 0xFF, // extra_extra_features
         ];
         let (s, len) = Struct::parse((), &bleeding_edge_bytes).unwrap();
         assert_eq!(len, 28);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 0xF000_0000,
-            extra_features: Some(0x0022446688AACCEE),
-            extra_extra_features: Some(0x1133557799BBDDFF),
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 0xF000_0000,
+                extra_features: Some(0x0022446688AACCEE),
+                extra_extra_features: Some(0x1133557799BBDDFF),
+            }
+        );
     }
 }
 
@@ -201,57 +215,63 @@ fn conditional_serializing() {
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x00, 0x00, 0x00, 0x00, // version
         ];
 
         let (s, len) = Struct::parse((), &obsolete_bytes).unwrap();
         assert_eq!(len, 12);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 0,
-            extra_features: None,
-            extra_extra_features: None,
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 0,
+                extra_features: None,
+                extra_extra_features: None,
+            }
+        );
     }
     {
         let stable_bytes = [
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x01, 0x00, 0x00, 0x00, // version
             0x00, 0x22, 0x44, 0x66, 0x88, 0xAA, 0xCC, 0xEE, // extra_features
         ];
         let (s, len) = Struct::parse((), &stable_bytes).unwrap();
         assert_eq!(len, 20);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 1,
-            extra_features: Some(0x0022446688AACCEE),
-            extra_extra_features: None,
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 1,
+                extra_features: Some(0x0022446688AACCEE),
+                extra_extra_features: None,
+            }
+        );
     }
     {
         let bleeding_edge_bytes = [
             0x42, 0x42, 0x42, 0x42, // a
             0x37, 0x13, // b
             0xFF, 0xFF, // alignment
-
             0x00, 0x00, 0x00, 0xF0, // version
             0x00, 0x22, 0x44, 0x66, 0x88, 0xAA, 0xCC, 0xEE, // extra_features
             0x11, 0x33, 0x55, 0x77, 0x99, 0xBB, 0xDD, 0xFF, // extra_extra_features
         ];
         let (s, len) = Struct::parse((), &bleeding_edge_bytes).unwrap();
         assert_eq!(len, 28);
-        assert_eq!(s, Struct {
-            a: 0x42424242,
-            b: 0x1337,
-            version: 0xF000_0000,
-            extra_features: Some(0x0022446688AACCEE),
-            extra_extra_features: Some(0x1133557799BBDDFF),
-        });
+        assert_eq!(
+            s,
+            Struct {
+                a: 0x42424242,
+                b: 0x1337,
+                version: 0xF000_0000,
+                extra_features: Some(0x0022446688AACCEE),
+                extra_extra_features: Some(0x1133557799BBDDFF),
+            }
+        );
     }
 }
