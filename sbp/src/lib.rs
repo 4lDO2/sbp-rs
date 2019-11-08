@@ -389,3 +389,17 @@ macro_rules! parsable_bitflags(
         ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Be }
     };
 );
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn take_bytes() {
+        use crate::{Parser, Take};
+
+        let bytes = b"Hello, world! Hello, again!";
+
+        let (subrange, len): (&[u8], usize) = Take::parse(13, bytes).unwrap();
+        assert_eq!(len, 13);
+        assert_eq!(subrange, b"Hello, world!");
+    }
+}
