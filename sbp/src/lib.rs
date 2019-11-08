@@ -6,15 +6,28 @@ use std::{
 #[cfg(feature = "derive")]
 pub use sbp_derive::sbp;
 
+/// An error that may be caused by insufficient bytes.
 pub trait OutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
 }
 
+/// An error indicating that an insufficient amount of bytes were available when parsing or
+/// serializing.
 #[derive(Debug)]
 pub struct BasicOutOfSpaceError {
+    /// The amount of bytes supplied.
     pub bytes_got: usize,
+
+    /// The amount of bytes required for successful parsing.
     pub bytes_required: usize,
 }
+
+impl std::fmt::Display for BasicOutOfSpaceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "expected {} bytes, got {}", self.bytes_required, self.bytes_got)
+    }
+}
+impl std::error::Error for BasicOutOfSpaceError {}
 
 impl OutOfSpaceError for BasicOutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
@@ -22,29 +35,35 @@ impl OutOfSpaceError for BasicOutOfSpaceError {
     }
 }
 
+/// Represents a parser that can parse a sequency of bytes into a meaningful type.
 pub trait Parser<'a, Target> {
+    /// The error that the parsing can result in.
     type Error: OutOfSpaceError;
 
     // XXX: Const generics could possibly eliminate this associated type, its only real use is the
     // Take combinator, which byte count could be specified using const generics.
+    /// An arbitrary additional value provided, this will usually be `()`.
+    /// When const generics comes, this probably won't be required.
     type Meta;
 
+    /// Parse bytes. The bytes may or may not have an adequately size for successful parsing, this
+    /// should be taken into account when implementing a parser.
     fn parse(meta: Self::Meta, bytes: &'a [u8]) -> Result<(Target, usize), Self::Error>;
 }
 
+/// A parser which size is known at compile time.
 pub trait ParserKnownSize<'a, Target>: Parser<'a, Target> {
     const LEN: usize;
 }
 
-pub trait Parse<'a>: Parser<'a, Self>
-where
-    Self: Sized,
-{
-}
+/// A type that can parse itself.
+pub trait Parse<'a>: Parser<'a, Self> where Self: Sized {}
 
+/// A type that can parse itself, and with a static size.
 pub trait ParseKnownSize<'a>: ParserKnownSize<'a, Self> + Parse<'a> {}
 
-pub struct Take(usize);
+/// A parser that takes an arbitrary amount of bytes.
+pub struct Take;
 
 impl<'a, T> Parser<'a, T> for Take
 where
@@ -83,29 +102,39 @@ where
     }
 }
 
+/// A serializer that can serialize a type into raw bytes.
 pub trait Serializer<'a, T> {
+    /// An extra value provided, currently only meant and used for `Take`.
     type Meta;
+
+    /// The error that may occur when serializing.
     type Error: OutOfSpaceError;
 
+    /// Serialize a type into raw bytes.
     fn serialize(data: &T, meta: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error>;
 }
 
-pub trait Serialize<'a>: Serializer<'a, Self>
-where
-    Self: Sized,
-{
-}
+/// A type that can serialize itself.
+pub trait Serialize<'a>: Serializer<'a, Self> where Self: Sized {}
 
+/// A type which requires a static (known at compile-time) amount of bytes for serializing to.
 pub trait SerializerKnownLength<'a, T>: Serializer<'a, T> {
     const LEN: usize;
 }
-pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a>
-where
-    Self: Sized,
-{
-}
+
+/// A type that can serialize itself and has a static raw size.
+pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a> where Self: Sized {}
+
+/// A parser for parsing unsigned and signed integers, stored in little-endian.
+///
+/// Note that this type is frequently used in the `sbp` macro, in that case it's an intermediate
+/// type, since there normally is no type argument here.
 
 pub struct Le;
+/// A parser for parsing unsigned and signed integers, stored in big-endian.
+///
+/// Note that this type is frequently used in the `sbp` macro, in that case it's an intermediate
+/// type, since there normally is no type argument here.
 pub struct Be;
 
 macro_rules! parser_impl(
@@ -171,6 +200,7 @@ parser_impl!(i32, Be, from_be_bytes, to_be_bytes);
 parser_impl!(i64, Be, from_be_bytes, to_be_bytes);
 parser_impl!(i128, Be, from_be_bytes, to_be_bytes);
 
+/// Align a number to an alignment, by rounding upwards.
 pub fn align<T>(number: T, alignment: T) -> T
 where
     T: Add<Output = T>
@@ -188,18 +218,35 @@ where
     }) * alignment
 }
 
+/// An error caused by either an insufficient byte count, or an invalid bitmask.
+///
+/// _Only available if the `bitflags` feature has been enabled._
+#[cfg(feature = "bitflags")]
 #[derive(Debug)]
 pub enum ParseBitflagsError<T> {
     InsufficientSize(BasicOutOfSpaceError),
     InvalidBitmask(T, T),
 }
 
+impl<T: std::fmt::LowerHex> std::fmt::Display for ParseBitflagsError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::InsufficientSize(error) => std::fmt::Display::fmt(&error, f),
+            Self::InvalidBitmask(got, expected) => write!(f, "invalid bitmask, bitmask 0x{:x} wasn't contained in 0x{:x}", got, expected),
+        }
+    }
+}
+#[cfg(feature = "bitflags")]
+impl<T: std::fmt::Debug + std::fmt::LowerHex> std::error::Error for ParseBitflagsError<T> {}
+
+#[cfg(feature = "bitflags")]
 impl<T> From<BasicOutOfSpaceError> for ParseBitflagsError<T> {
     fn from(basic: BasicOutOfSpaceError) -> Self {
         Self::InsufficientSize(basic)
     }
 }
 
+#[cfg(feature = "bitflags")]
 impl<T> OutOfSpaceError for ParseBitflagsError<T> {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
         match self {
@@ -210,7 +257,30 @@ impl<T> OutOfSpaceError for ParseBitflagsError<T> {
 }
 
 /// Declare a bitflags struct that can be parsed and serialized.
+///
 /// _Only available if the `bitflags` feature has been enabled._
+///
+/// ## Example
+/// ```rust
+/// # use sbp::{Parser, parsable_bitflags};
+/// #
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+///
+/// parsable_bitflags! {
+///     pub struct MyStruct: Le<u16> {
+///         const FLAG_A = 0x8;
+///         const FLAG_B = 0x10;
+///         const FLAG_C = 0x200;
+///     }
+/// }
+///
+/// let bytes = [0x18, 0x02];
+/// let (my_struct, _length) = MyStruct::parse((), &bytes)?;
+/// assert_eq!(my_struct, MyStruct::FLAG_A | MyStruct::FLAG_B | MyStruct::FLAG_C);
+///
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "bitflags")]
 #[macro_export]
 macro_rules! parsable_bitflags(
