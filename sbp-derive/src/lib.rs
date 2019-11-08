@@ -222,6 +222,32 @@ fn regular_parser_func(ty: &syn::Type) -> syn::Expr {
     })
 }
 
+fn regular_serializer_func(ty: &syn::Type) -> syn::Expr {
+    let (qself, original_path) = match ty {
+        syn::Type::Path(syn::TypePath {
+            path: syn::Path { ref segments, .. },
+            ref qself,
+            ..
+        }) => (qself.clone(), segments.clone()),
+        other => panic!("{:?}", other),
+    };
+
+    let mut segments = original_path;
+    segments.push(syn::PathSegment {
+        ident: syn::Ident::new("serialize", proc_macro2::Span::call_site()),
+        arguments: syn::PathArguments::None,
+    });
+
+    syn::Expr::Path(syn::ExprPath {
+        attrs: vec![],
+        qself: qself,
+        path: syn::Path {
+            leading_colon: None,
+            segments,
+        },
+    })
+}
+
 fn empty_tuple() -> syn::Expr {
     syn::Expr::Tuple(syn::ExprTuple {
         attrs: vec![],
@@ -237,18 +263,14 @@ fn regular_parser_expr(field: syn::Field) -> syn::Expr {
     )
 }
 
-fn generic_parser_expr(parser_type: syn::Type, target_type: syn::Type, data_expr: syn::Expr) -> syn::Expr {
-    // Assume that every type this function is called for is sbp::Parse, rather than sbp::Parser.
-
-    let position = 2;
-
-    let ty = syn::Type::Path(syn::TypePath {
+fn parser_or_serializer_as_trait(parser_type: syn::Type, trait_ident: syn::Ident, target_type: syn::Type) -> syn::Type {
+    syn::Type::Path(syn::TypePath {
         qself: Some(syn::QSelf {
-            as_token: Some(syn::Token!(as)(proc_macro2::Span::call_site())),
-            lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
-            gt_token: syn::Token!(>)(proc_macro2::Span::call_site()),
+            as_token: Some(Default::default()),
+            lt_token: Default::default(),
+            gt_token: Default::default(),
             ty: Box::new(parser_type),
-            position,
+            position: 2,
         }),
         path: syn::Path {
             leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
@@ -258,7 +280,7 @@ fn generic_parser_expr(parser_type: syn::Type, target_type: syn::Type, data_expr
                     arguments: syn::PathArguments::None,
                 },
                 syn::PathSegment {
-                    ident: syn::Ident::new("Parser", proc_macro2::Span::call_site()),
+                    ident: trait_ident,
                     arguments: syn::PathArguments::AngleBracketed(
                         syn::AngleBracketedGenericArguments {
                             lt_token: syn::Token!(<)(proc_macro2::Span::call_site()),
@@ -280,7 +302,13 @@ fn generic_parser_expr(parser_type: syn::Type, target_type: syn::Type, data_expr
             .into_iter()
             .collect(),
         },
-    });
+    })
+}
+
+fn generic_parser_expr(parser_type: syn::Type, target_type: syn::Type, data_expr: syn::Expr) -> syn::Expr {
+    // Assume that every type this function is called for is sbp::Parse, rather than sbp::Parser.
+
+    let ty = parser_or_serializer_as_trait(parser_type, syn::Ident::new("Parser", proc_macro2::Span::call_site()), target_type);
 
     syn::Expr::Call(syn::ExprCall {
         attrs: vec![],
@@ -451,32 +479,36 @@ fn simple_expr(ident: syn::Ident) -> syn::Expr {
     })
 }
 
+fn pod_combinator_type(endianness: Endianness) -> syn::Type {
+    syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path {
+            leading_colon: Some(Default::default()),
+            segments: vec![
+                syn::PathSegment {
+                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+                syn::PathSegment {
+                    ident: syn::Ident::new(
+                        match endianness {
+                            Endianness::Big => "Be",
+                            Endianness::Little => "Le",
+                        },
+                        proc_macro2::Span::call_site(),
+                    ),
+                    arguments: syn::PathArguments::None,
+                },
+            ]
+            .into_iter()
+            .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+        },
+    })
+}
+
 fn pod_expr(endianness: Endianness, ty: syn::Ident) -> syn::Expr {
     generic_parser_expr(
-        syn::Type::Path(syn::TypePath {
-            qself: None,
-            path: syn::Path {
-                leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
-                segments: vec![
-                    syn::PathSegment {
-                        ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
-                        arguments: syn::PathArguments::None,
-                    },
-                    syn::PathSegment {
-                        ident: syn::Ident::new(
-                            match endianness {
-                                Endianness::Big => "Be",
-                                Endianness::Little => "Le",
-                            },
-                            proc_macro2::Span::call_site(),
-                        ),
-                        arguments: syn::PathArguments::None,
-                    },
-                ]
-                .into_iter()
-                .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
-            },
-        }),
+        pod_combinator_type(endianness),
         simple_type(ty),
         empty_tuple(),
     )
@@ -594,12 +626,12 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
                     question_mark_operator_expr(generic_parser_expr(parser_type, field.ty, data_expr)),
                 )),
             )),
-            semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
+            semi_token: Default::default(),
         }),
 
         Item::FieldWithEndianness(_, ident, (endianness, ty)) => syn::Stmt::Local(syn::Local {
             attrs: vec![],
-            let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
+            let_token: Default::default(),
             pat: simple_pattern(ident.clone()),
             init: Some((
                 Default::default(),
@@ -607,7 +639,7 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
                     question_mark_operator_expr(pod_expr(endianness, ty)),
                 )),
             )),
-            semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
+            semi_token: Default::default(),
         }),
 
         Item::Conditional(items, condition) => syn::Stmt::Local(syn::Local {
@@ -620,11 +652,100 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
     }
 }
 
+fn generic_serialize(field_ident: syn::Ident, serializer_type: syn::Type, target_type: syn::Type, meta_expr: syn::Expr) -> syn::Expr {
+    let ty = parser_or_serializer_as_trait(serializer_type, syn::Ident::new("Serializer", proc_macro2::Span::call_site()), target_type);
+
+    let field_expr = syn::Expr::Field(syn::ExprField {
+        attrs: vec! [],
+        dot_token: Default::default(),
+        base: Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_data", proc_macro2::Span::call_site()))),
+        member: syn::Member::Named(field_ident),
+    });
+
+    let field_ref_expr = syn::Expr::Reference(syn::ExprReference {
+        and_token: Default::default(),
+        attrs: vec! [],
+        expr: Box::new(field_expr),
+        mutability: None,
+        raw: Default::default(),
+    });
+
+    question_mark_operator_expr(syn::Expr::Call(syn::ExprCall {
+        attrs: vec![],
+        func: Box::new(regular_serializer_func(&ty)),
+        paren_token: Default::default(),
+        args: vec! [
+            field_ref_expr,
+            meta_expr,
+            syn::Expr::Reference(syn::ExprReference {
+                attrs: vec! [],
+                expr: Box::new(syn::Expr::Index(syn::ExprIndex {
+                    attrs: vec! [],
+                    bracket_token: Default::default(),
+                    expr: Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_bytes", proc_macro2::Span::call_site()))),
+                    index: Box::new(syn::Expr::Range(syn::ExprRange {
+                        attrs: vec! [],
+                        limits: syn::RangeLimits::HalfOpen(Default::default()),
+                        from: Some(Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())))),
+                        to: None,
+                    })),
+                })),
+                mutability: Some(Default::default()),
+                and_token: Default::default(),
+                raw: Default::default(),
+            }),
+        ].into_iter().collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+    }))
+}
+
+fn field_with_endianness_stmt(ident: syn::Ident, endianness: Endianness, ty: syn::Ident, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Semi(syn::Expr::AssignOp(syn::ExprAssignOp {
+        attrs: vec! [],
+        left: offset_expr.clone(),
+        op: syn::BinOp::AddEq(Default::default()),
+        right: Box::new(generic_serialize(ident, pod_combinator_type(endianness), simple_type(ty), empty_tuple())),
+    }), Default::default())
+}
+
+fn regular_field_stmt(field: syn::Field, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Expr(syn::Expr::AssignOp(syn::ExprAssignOp {
+        attrs: vec! [],
+        left: offset_expr.clone(),
+        op: syn::BinOp::AddEq(Default::default()),
+        right: Box::new(generic_serialize(field.ident.unwrap(), field.ty.clone(), field.ty, empty_tuple())),
+    }))
+}
+
+fn custom_parsed_stmt(field: syn::Field, parser: syn::Type, meta_expr: syn::Expr, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Expr(syn::Expr::AssignOp(syn::ExprAssignOp {
+        attrs: vec! [],
+        left: offset_expr.clone(),
+        op: syn::BinOp::AddEq(Default::default()),
+        right: Box::new(generic_serialize(field.ident.unwrap(), parser, field.ty, meta_expr)),
+    }))
+}
+
+fn conditional_stmt(items: Vec<Item>, cond: syn::Expr, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Expr(syn::Expr::If(syn::ExprIf {
+        attrs: vec! [],
+        cond: Box::new(cond),
+        else_branch: None,
+        if_token: Default::default(),
+        then_branch: syn::Block {
+            brace_token: Default::default(),
+            stmts: items.into_iter().map(|item| item_to_stmt(item, offset_expr, align_func)).collect(),
+        },
+    }))
+}
+
 fn item_to_stmt(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
     match item {
         Item::Align(alignment) => align_stmt(alignment, offset_expr, align_func),
         Item::Pad(padding) => pad_stmt(padding, offset_expr),
-        _ => syn::Stmt::Semi(empty_tuple(), Default::default()),
+        Item::FieldWithEndianness(_, ident, (endianness, ty)) => field_with_endianness_stmt(ident, endianness, ty, offset_expr),
+        Item::RegularField(field) => regular_field_stmt(field, offset_expr),
+        Item::CustomParsed(field, parser, meta_expr) => custom_parsed_stmt(field, parser, meta_expr, offset_expr),
+        Item::Conditional(items, cond) => conditional_stmt(items, cond, offset_expr, align_func),
     }
 }
 
@@ -815,8 +936,6 @@ fn serializable(input: TokenStream) -> TokenStream {
         panic!()
     };
 
-    dbg!(&items);
-
     let align_func = align_func();
     let offset_expr = Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())));
 
@@ -827,12 +946,12 @@ fn serializable(input: TokenStream) -> TokenStream {
             type Meta = ();
             type Error = ::sbp::BasicOutOfSpaceError;
 
-            fn serialize(data: &Self, _: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
-                let mut __sbp__proc_macro_offset = 0;
+            fn serialize(__sbp_proc_macro_data: &Self, _: Self::Meta, __sbp_proc_macro_bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
+                let mut __sbp_proc_macro_offset = 0;
 
                 #(#statements)*
 
-                Ok(__sbp__proc_macro_offset)
+                Ok(__sbp_proc_macro_offset)
             }
         }
     };
