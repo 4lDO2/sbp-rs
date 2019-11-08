@@ -3,6 +3,9 @@ use std::{
     ops::{Add, Div, Mul, Rem},
 };
 
+#[cfg(feature = "derive")]
+pub use sbp_derive::sbp;
+
 pub trait OutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
 }
@@ -185,6 +188,7 @@ where
     }) * alignment
 }
 
+#[derive(Debug)]
 pub enum ParseBitflagsError<T> {
     InsufficientSize(BasicOutOfSpaceError),
     InvalidBitmask(T, T),
@@ -205,46 +209,94 @@ impl<T> OutOfSpaceError for ParseBitflagsError<T> {
     }
 }
 
+/// Declare a bitflags struct that can be parsed and serialized.
+/// _Only available if the `bitflags` feature has been enabled._
 #[cfg(feature = "bitflags")]
 #[macro_export]
 macro_rules! parsable_bitflags(
     {
-        __impl impl, $name:ident, $target:ty
+        __impl impl, $name:ident, $target:ty, $endianness:ident
     } => {
         impl<'a> ::sbp::Parser<'a, $name> for $name {
             type Meta = ();
             type Error = ::sbp::ParseBitflagsError<$target>;
 
-            fn parse(data: Self::Data, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
-                // TODO: Configurable endianness.
-                let (raw, size) = <::sbp::Le as ::sbp::Parser<'a, $target>>::parse((), bytes)?;
+            fn parse(_: Self::Meta, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
+                let (raw, size) = <::sbp::$endianness as ::sbp::Parser<'a, $target>>::parse((), bytes)?;
                 Self::from_bits(raw).map(|this| (this, size)).ok_or(::sbp::ParseBitflagsError::<$target>::InvalidBitmask(raw, Self::all().bits()))
             }
         }
         impl<'a> ::sbp::Parse<'a> for $name {}
+
+        impl<'a> ::sbp::ParserKnownSize<'a, $name> for $name {
+            const LEN: usize = ::std::mem::size_of::<$target>();
+        }
+        impl<'a> ::sbp::ParseKnownSize<'a> for $name {}
+
+        impl<'a> ::sbp::Serializer<'a, $name> for $name {
+            type Meta = ();
+            type Error = ::sbp::BasicOutOfSpaceError;
+
+            fn serialize(data: &Self, _: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
+                let raw = data.bits();
+                <::sbp::$endianness as ::sbp::Serializer<'a, $target>>::serialize(&raw, (), bytes)
+            }
+        }
+        impl<'a> ::sbp::Serialize<'a> for $name {}
+
+        impl<'a> ::sbp::SerializerKnownLength<'a, $name> for $name {
+            const LEN: usize = ::std::mem::size_of::<$target>();
+        }
+        impl<'a> ::sbp::SerializeKnownLength<'a> for $name {}
     };
     {
-        pub struct $name:ident: $repr:ty {
+        pub struct $name:ident: Le<$repr:ty> {
             $($body:tt)+
         }
     } => {
-        bitflags! {
+        ::bitflags::bitflags! {
             pub struct $name: $repr {
                 $($body)+
             }
         }
-        ::sbp::parsable_bitflags! { __impl impl, $name, $repr }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Le }
     };
     {
-        struct $name:ident: $repr:ty {
+        struct $name:ident: Be<$repr:ty> {
             $($body:tt)+
         }
     } => {
-        bitflags! {
+        ::bitflags::bitflags! {
             struct $name: $repr {
                 $($body)+
             }
         }
-        ::sbp::parsable_bitflags! { __impl impl, $name, $repr }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Be }
+    };
+
+    {
+        pub struct $name:ident: Le<$repr:ty> {
+            $($body:tt)+
+        }
+    } => {
+        ::bitflags::bitflags! {
+            pub struct $name: $repr {
+                $($body)+
+            }
+        }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Le }
+    };
+    {
+        struct $name:ident: Be<$repr:ty> {
+            $($body:tt)+
+        }
+    } => {
+        ::bitflags::bitflags! {
+            struct $name: $repr {
+                $($body)+
+            }
+        }
+        ::sbp::parsable_bitflags! { __impl impl, $name, $repr, Be }
     };
 );
+
