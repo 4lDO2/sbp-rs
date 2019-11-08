@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["4lDO2 <4lDO2@protonmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/4lDO2/sbp-rs"
+documentation = "https://docs.rs/sbp"
+readme = "../README.md"
+categories = ["parsing"]
+keywords = ["parser", "parsing", "serializer", "serializing", "macros", "binary"]
+description = "A quick-and-dirty crate that supports compactly defining parsable structs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
