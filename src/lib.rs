@@ -1,28 +1,29 @@
 use std::{num::NonZeroUsize, ops::{Add, Div, Mul, Rem}};
 
-pub trait ParseError {
+pub trait OutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
 }
 
 #[derive(Debug)]
-pub struct BasicParseError {
+pub struct BasicOutOfSpaceError {
     pub bytes_got: usize,
     pub bytes_required: usize,
 }
 
-impl ParseError for BasicParseError {
+impl OutOfSpaceError for BasicOutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
         NonZeroUsize::new(self.bytes_required - self.bytes_got)
     }
 }
 
 pub trait Parser<'a, Target> {
-    type Error: ParseError;
+    type Error: OutOfSpaceError;
 
-    // XXX: Const generics could possibly eliminate this associated type.
-    type Data;
+    // XXX: Const generics could possibly eliminate this associated type, its only real use is the
+    // Take combinator, which byte count could be specified using const generics.
+    type Meta;
 
-    fn parse(data: Self::Data, bytes: &'a [u8]) -> Result<(Target, usize), Self::Error>;
+    fn parse(meta: Self::Meta, bytes: &'a [u8]) -> Result<(Target, usize), Self::Error>;
 }
 
 pub trait ParserKnownSize<'a, Target>: Parser<'a, Target> {
@@ -43,12 +44,12 @@ impl<'a, T> Parser<'a, T> for Take
 where
     T: From<&'a [u8]>
 {
-    type Error = BasicParseError;
-    type Data = usize;
+    type Error = BasicOutOfSpaceError;
+    type Meta = usize;
 
     fn parse(amount: usize, bytes: &'a [u8]) -> Result<(T, usize), Self::Error> {
         if bytes.len() < amount {
-            return Err(BasicParseError {
+            return Err(BasicOutOfSpaceError {
                 bytes_got: bytes.len(),
                 bytes_required: amount,
             });
@@ -57,54 +58,85 @@ where
     }
 }
 
+pub trait Serializer<'a, T> {
+    type Meta;
+    type Error: OutOfSpaceError;
+
+    fn serialize(data: &T, meta: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error>;
+}
+
+pub trait Serialize<'a>: Serializer<'a, Self> where Self: Sized {}
+
+pub trait SerializerKnownLength<'a, T>: Serializer<'a, T> {
+    const LEN: usize;
+}
+pub trait SerializeKnownLength<'a>: SerializerKnownLength<'a, Self> + Serialize<'a> where Self: Sized {}
+
 pub struct Le;
 pub struct Be;
 
 macro_rules! parser_impl(
-    ($target:ty, $parser:ty, $function:ident) => {
+    ($target:ty, $parser:ty, $from:ident, $to:ident) => {
         impl<'a> Parser<'a, $target> for $parser {
-            type Error = BasicParseError;
-            type Data = ();
+            type Error = BasicOutOfSpaceError;
+            type Meta = ();
 
-            fn parse(_: Self::Data, bytes: &'a [u8]) -> Result<($target, usize), Self::Error> {
+            fn parse(_: Self::Meta, bytes: &'a [u8]) -> Result<($target, usize), Self::Error> {
                 const SIZE: usize = ::std::mem::size_of::<$target>();
 
                 if bytes.len() < SIZE {
-                    return Err(BasicParseError { bytes_got: bytes.len(), bytes_required: SIZE });
+                    return Err(BasicOutOfSpaceError { bytes_got: bytes.len(), bytes_required: SIZE });
                 }
 
                 let mut array = [0u8; SIZE];
                 array.copy_from_slice(&bytes[..SIZE]);
 
-                Ok((<$target>::$function(array), SIZE))
+                Ok((<$target>::$from(array), SIZE))
+            }
+        }
+        impl<'a> Serializer<'a, $target> for $parser {
+            type Error = BasicOutOfSpaceError;
+            type Meta = ();
+
+            fn serialize(data: &$target, _: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
+                const SIZE: usize = ::std::mem::size_of::<$target>();
+
+                if bytes.len() < SIZE {
+                    return Err(BasicOutOfSpaceError { bytes_got: bytes.len(), bytes_required: SIZE });
+                }
+
+                let array = data.$to();
+                bytes[..SIZE].copy_from_slice(&array);
+
+                Ok(SIZE)
             }
         }
     };
 );
 
-parser_impl!(u8, Le, from_le_bytes);
-parser_impl!(u16, Le, from_le_bytes);
-parser_impl!(u32, Le, from_le_bytes);
-parser_impl!(u64, Le, from_le_bytes);
-parser_impl!(u128, Le, from_le_bytes);
+parser_impl!(u8, Le, from_le_bytes, to_le_bytes);
+parser_impl!(u16, Le, from_le_bytes, to_le_bytes);
+parser_impl!(u32, Le, from_le_bytes, to_le_bytes);
+parser_impl!(u64, Le, from_le_bytes, to_le_bytes);
+parser_impl!(u128, Le, from_le_bytes, to_le_bytes);
 
-parser_impl!(i8, Le, from_le_bytes);
-parser_impl!(i16, Le, from_le_bytes);
-parser_impl!(i32, Le, from_le_bytes);
-parser_impl!(i64, Le, from_le_bytes);
-parser_impl!(i128, Le, from_le_bytes);
+parser_impl!(i8, Le, from_le_bytes, to_le_bytes);
+parser_impl!(i16, Le, from_le_bytes, to_le_bytes);
+parser_impl!(i32, Le, from_le_bytes, to_le_bytes);
+parser_impl!(i64, Le, from_le_bytes, to_le_bytes);
+parser_impl!(i128, Le, from_le_bytes, to_le_bytes);
 
-parser_impl!(u8, Be, from_be_bytes);
-parser_impl!(u16, Be, from_be_bytes);
-parser_impl!(u32, Be, from_be_bytes);
-parser_impl!(u64, Be, from_be_bytes);
-parser_impl!(u128, Be, from_be_bytes);
+parser_impl!(u8, Be, from_be_bytes, to_be_bytes);
+parser_impl!(u16, Be, from_be_bytes, to_be_bytes);
+parser_impl!(u32, Be, from_be_bytes, to_be_bytes);
+parser_impl!(u64, Be, from_be_bytes, to_be_bytes);
+parser_impl!(u128, Be, from_be_bytes, to_be_bytes);
 
-parser_impl!(i8, Be, from_be_bytes);
-parser_impl!(i16, Be, from_be_bytes);
-parser_impl!(i32, Be, from_be_bytes);
-parser_impl!(i64, Be, from_be_bytes);
-parser_impl!(i128, Be, from_be_bytes);
+parser_impl!(i8, Be, from_be_bytes, to_be_bytes);
+parser_impl!(i16, Be, from_be_bytes, to_be_bytes);
+parser_impl!(i32, Be, from_be_bytes, to_be_bytes);
+parser_impl!(i64, Be, from_be_bytes, to_be_bytes);
+parser_impl!(i128, Be, from_be_bytes, to_be_bytes);
 
 pub fn align<T>(number: T, alignment: T) -> T
 where
@@ -124,17 +156,17 @@ where
 }
 
 pub enum ParseBitflagsError<T> {
-    InsufficientSize(BasicParseError),
+    InsufficientSize(BasicOutOfSpaceError),
     InvalidBitmask(T, T),
 }
 
-impl<T> From<BasicParseError> for ParseBitflagsError<T> {
-    fn from(basic: BasicParseError) -> Self {
+impl<T> From<BasicOutOfSpaceError> for ParseBitflagsError<T> {
+    fn from(basic: BasicOutOfSpaceError) -> Self {
         Self::InsufficientSize(basic)
     }
 }
 
-impl<T> ParseError for ParseBitflagsError<T> {
+impl<T> OutOfSpaceError for ParseBitflagsError<T> {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
         match self {
             Self::InsufficientSize(err) => err.additional_required_bytes(),
@@ -150,7 +182,7 @@ macro_rules! parsable_bitflags(
         __impl impl, $name:ident, $target:ty
     } => {
         impl<'a> ::sbp::Parser<'a, $name> for $name {
-            type Data = ();
+            type Meta = ();
             type Error = ::sbp::ParseBitflagsError<$target>;
 
             fn parse(data: Self::Data, bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {

@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, ItemStruct};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Endianness {
     Little,
     Big,
@@ -72,7 +72,7 @@ fn match_endianness_specifier(field: &syn::Field) -> Option<(Endianness, syn::Id
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Item {
     RegularField(syn::Field),
     FieldWithEndianness(syn::Visibility, syn::Ident, (Endianness, syn::Ident)),
@@ -525,44 +525,52 @@ fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
     })
 }
 
+fn align_stmt(alignment: syn::LitInt, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Semi(
+        syn::Expr::Assign(syn::ExprAssign {
+            attrs: vec![],
+            eq_token: syn::Token!(=)(proc_macro2::Span::call_site()),
+            left: offset_expr.clone(),
+            right: Box::new(syn::Expr::Call(syn::ExprCall {
+                attrs: vec![],
+                func: align_func.clone(),
+                paren_token: syn::token::Paren {
+                    span: proc_macro2::Span::call_site(),
+                },
+                args: vec![
+                    (**offset_expr).clone(),
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(alignment),
+                        attrs: vec![],
+                    }),
+                ]
+                .into_iter()
+                .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
+            })),
+        }),
+        syn::Token!(;)(proc_macro2::Span::call_site()),
+    )
+}
+
+fn pad_stmt(padding: syn::LitInt, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+    syn::Stmt::Semi(
+        syn::Expr::AssignOp(syn::ExprAssignOp {
+            attrs: vec![],
+            left: offset_expr.clone(),
+            op: syn::BinOp::AddEq(Default::default()),
+            right: Box::new(syn::Expr::Lit(syn::ExprLit {
+                attrs: vec![],
+                lit: syn::Lit::Int(padding),
+            })),
+        }),
+        Default::default(),
+    )
+}
+
 fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
     match item {
-        Item::Align(alignment) => syn::Stmt::Semi(
-            syn::Expr::Assign(syn::ExprAssign {
-                attrs: vec![],
-                eq_token: syn::Token!(=)(proc_macro2::Span::call_site()),
-                left: offset_expr.clone(),
-                right: Box::new(syn::Expr::Call(syn::ExprCall {
-                    attrs: vec![],
-                    func: align_func.clone(),
-                    paren_token: syn::token::Paren {
-                        span: proc_macro2::Span::call_site(),
-                    },
-                    args: vec![
-                        (**offset_expr).clone(),
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Int(alignment),
-                            attrs: vec![],
-                        }),
-                    ]
-                    .into_iter()
-                    .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>(),
-                })),
-            }),
-            syn::Token!(;)(proc_macro2::Span::call_site()),
-        ),
-        Item::Pad(padment) => syn::Stmt::Semi(
-            syn::Expr::AssignOp(syn::ExprAssignOp {
-                attrs: vec![],
-                left: offset_expr.clone(),
-                op: syn::BinOp::AddEq(syn::Token!(+=)(proc_macro2::Span::call_site())),
-                right: Box::new(syn::Expr::Lit(syn::ExprLit {
-                    attrs: vec![],
-                    lit: syn::Lit::Int(padment),
-                })),
-            }),
-            syn::Token!(;)(proc_macro2::Span::call_site()),
-        ),
+        Item::Align(alignment) => align_stmt(alignment, offset_expr, align_func),
+        Item::Pad(padment) => pad_stmt(padment, offset_expr),
         Item::RegularField(field) => syn::Stmt::Local(syn::Local {
             attrs: vec![],
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
@@ -573,7 +581,7 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
                     question_mark_operator_expr(regular_parser_expr(field)),
                 )),
             )),
-            semi_token: syn::Token!(;)(proc_macro2::Span::call_site()),
+            semi_token: Default::default(),
         }),
 
         Item::CustomParsed(field, parser_type, data_expr) => syn::Stmt::Local(syn::Local {
@@ -594,7 +602,7 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
             pat: simple_pattern(ident.clone()),
             init: Some((
-                syn::Token!(=)(proc_macro2::Span::call_site()),
+                Default::default(),
                 Box::new(offset_incr_expr(
                     question_mark_operator_expr(pod_expr(endianness, ty)),
                 )),
@@ -609,6 +617,14 @@ fn item_to_decl(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::
             semi_token: Default::default(),
             init: Some((Default::default(), Box::new(conditional_expr(items, condition, offset_expr, align_func)))),
         }),
+    }
+}
+
+fn item_to_stmt(item: Item, offset_expr: &Box<syn::Expr>, align_func: &Box<syn::Expr>) -> syn::Stmt {
+    match item {
+        Item::Align(alignment) => align_stmt(alignment, offset_expr, align_func),
+        Item::Pad(padding) => pad_stmt(padding, offset_expr),
+        _ => syn::Stmt::Semi(empty_tuple(), Default::default()),
     }
 }
 
@@ -702,8 +718,29 @@ fn question_mark_operator_expr(to_wrap: syn::Expr) -> syn::Expr {
     })
 }
 
-#[proc_macro_attribute]
-pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
+fn align_func() -> Box<syn::Expr> {
+    Box::new(syn::Expr::Path(syn::ExprPath {
+        attrs: vec![],
+        qself: None,
+        path: syn::Path {
+            leading_colon: Some(Default::default()),
+            segments: vec![
+                syn::PathSegment {
+                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+                syn::PathSegment {
+                    ident: syn::Ident::new("align", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                },
+            ]
+            .into_iter()
+            .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
+        },
+    }))
+}
+
+fn parsable(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as ItemStruct);
 
     let attrs = ast.attrs.into_iter();
@@ -725,33 +762,10 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
         .filter_map(item_to_field).flatten()
         .collect::<Vec<_>>();
 
-    let align_func = Box::new(syn::Expr::Path(syn::ExprPath {
-        attrs: vec![],
-        qself: None,
-        path: syn::Path {
-            leading_colon: Some(syn::Token!(::)(proc_macro2::Span::call_site())),
-            segments: vec![
-                syn::PathSegment {
-                    ident: syn::Ident::new("sbp", proc_macro2::Span::call_site()),
-                    arguments: syn::PathArguments::None,
-                },
-                syn::PathSegment {
-                    ident: syn::Ident::new("align", proc_macro2::Span::call_site()),
-                    arguments: syn::PathArguments::None,
-                },
-            ]
-            .into_iter()
-            .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
-        },
-    }));
+    let align_func = align_func();
+    let offset_expr = Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())));
 
-    let offset_expr = Box::new(syn::Expr::Path(syn::ExprPath {
-        attrs: vec![],
-        qself: None,
-        path: syn::Path::from(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())),
-    }));
-
-    let declarations = items.iter().cloned().map(|item| item_to_decl(item, &offset_expr, &align_func));
+    let declarations = items.into_iter().map(|item| item_to_decl(item, &offset_expr, &align_func));
 
     let ident = &ast.ident;
     let visibility = &ast.vis;
@@ -765,11 +779,12 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
             #(#fields,)*
         }
 
+        #[allow(unused_parens)]
         impl<'a> ::sbp::Parser<'a, #ident> for #ident {
-            type Data = ();
-            type Error = ::sbp::BasicParseError;
+            type Meta = ();
+            type Error = ::sbp::BasicOutOfSpaceError;
 
-            fn parse(_: Self::Data, __sbp_proc_macro_bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
+            fn parse(_: Self::Meta, __sbp_proc_macro_bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
                 let mut __sbp_proc_macro_offset = 0;
 
                 #(#declarations)*
@@ -782,4 +797,70 @@ pub fn parsable(_attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     tokens.into()
+}
+
+fn serializable(input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as ItemStruct);
+
+    let ident = ast.ident;
+
+    let items = if let syn::Fields::Named(syn::FieldsNamed { ref named, .. }) = ast.fields {
+        named
+            .iter()
+            .cloned()
+            .map(item_from_field)
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        panic!()
+    };
+
+    dbg!(&items);
+
+    let align_func = align_func();
+    let offset_expr = Box::new(simple_expr(syn::Ident::new("__sbp_proc_macro_offset", proc_macro2::Span::call_site())));
+
+    let statements = items.into_iter().map(|item| item_to_stmt(item, &offset_expr, &align_func));
+
+    let tokens = quote! {
+        impl<'a> ::sbp::Serializer<'a, #ident> for #ident {
+            type Meta = ();
+            type Error = ::sbp::BasicOutOfSpaceError;
+
+            fn serialize(data: &Self, _: Self::Meta, bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
+                let mut __sbp__proc_macro_offset = 0;
+
+                #(#statements)*
+
+                Ok(__sbp__proc_macro_offset)
+            }
+        }
+    };
+    tokens.into()
+}
+
+#[proc_macro_attribute]
+pub fn sbp(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let attr = proc_macro2::TokenStream::from(attr);
+
+    let mut output = proc_macro::TokenStream::from(quote! {});
+
+    // TODO: It doesn't seem like syn has a parser for the args of an attribute-like proc macro.
+    let args = attr.into_iter().collect::<Vec<_>>();
+
+    // TODO: Flattening here isn't really correct.
+    for arg in args.split(|tt| if let proc_macro2::TokenTree::Punct(_) = tt { true } else { false }).flatten() {
+        match arg {
+            proc_macro2::TokenTree::Ident(ident) => {
+                if ident == &syn::Ident::new("parsable", proc_macro2::Span::call_site()) {
+                    output.extend(parsable(input.clone().into()));
+                } else if ident == &syn::Ident::new("serializable", proc_macro2::Span::call_site()) {
+                    output.extend(serializable(input.clone().into()));
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    output
 }

@@ -1,9 +1,9 @@
-use sbp::{Parser, Take};
-use sbp_derive::parsable;
+use sbp::{Parser, Serializer, Take};
+use sbp_derive::sbp;
 
 #[test]
 fn custom_parsing() {
-    #[parsable]
+    #[sbp(parsable)]
     struct Struct {
         a: Le<u64>,
         b: Be<u32>,
@@ -34,7 +34,7 @@ fn custom_parsing() {
 
 #[test]
 fn alignment() {
-    #[parsable]
+    #[sbp(parsable)]
     struct Struct {
         eight: Le<u8>,
 
@@ -74,7 +74,7 @@ fn alignment() {
 
 #[test]
 fn conditional() {
-    #[parsable]
+    #[sbp(parsable)]
     #[derive(Debug, PartialEq)]
     struct Struct {
         a: Le<u32>,
@@ -148,4 +148,28 @@ fn conditional() {
             extra_extra_features: Some(0x1133557799BBDDFF),
         });
     }
+}
+
+#[test]
+fn parse_and_serialize() {
+    #[sbp(parsable, serializable)]
+    #[derive(Debug, PartialEq)]
+    struct Struct {
+        a: Le<u64>,
+        b: Be<u32>,
+        c: Be<i32>,
+    }
+
+    let instance = Struct {
+        a: 0xDEAD_BEEF_FED_FACE,
+        b: 0x13371337,
+        c: -0x13371337,
+    };
+
+    let mut buffer = [0u8; 16];
+    Struct::serialize(&instance, (), &mut buffer).unwrap();
+
+    let (instance2, len) = Struct::parse((), &buffer).unwrap();
+    assert_eq!(len, buffer.len());
+    assert_eq!(instance, instance2);
 }
