@@ -74,12 +74,12 @@ fn match_endianness_specifier(field: &syn::Field) -> Option<(Endianness, syn::Id
 
 #[derive(Clone, Debug)]
 enum Item {
-    RegularField(syn::Field),
+    RegularField(Box<syn::Field>),
     FieldWithEndianness(syn::Visibility, syn::Ident, (Endianness, syn::Ident)),
     Align(syn::LitInt),
     Pad(syn::LitInt),
-    Conditional(Vec<Item>, syn::Expr),
-    CustomParsed(syn::Field, syn::Type, syn::Expr),
+    Conditional(Vec<Item>, Box<syn::Expr>),
+    CustomParsed(Box<syn::Field>, Box<syn::Type>, Box<syn::Expr>),
 }
 
 impl Item {
@@ -104,7 +104,7 @@ fn parse_number(tokens: &proc_macro2::TokenStream) -> Result<syn::LitInt, AttrPa
     {
         Ok(int)
     } else {
-        return Err(AttrParseError);
+        Err(AttrParseError)
     }
 }
 
@@ -191,9 +191,16 @@ fn match_field_custom(field: &mut syn::Field) -> Option<(syn::Type, syn::Expr)> 
 
 fn item_from_field(mut field: syn::Field) -> Vec<Item> {
     if let Some(condition) = match_field_conditional(&mut field) {
-        return vec![Item::Conditional(item_from_field(field), condition)];
-    } else if let Some((ty, data)) = match_field_custom(&mut field) {
-        return vec![Item::CustomParsed(field, ty, data)];
+        return vec![Item::Conditional(
+            item_from_field(field),
+            Box::new(condition),
+        )];
+    } else if let Some((ty, meta)) = match_field_custom(&mut field) {
+        return vec![Item::CustomParsed(
+            Box::new(field),
+            Box::new(ty),
+            Box::new(meta),
+        )];
     }
 
     let mut items: Vec<Item> = vec![];
@@ -203,7 +210,7 @@ fn item_from_field(mut field: syn::Field) -> Vec<Item> {
         if let Some((endianness, ty)) = match_endianness_specifier(&field) {
             Item::FieldWithEndianness(field.vis, field.ident.unwrap(), (endianness, ty))
         } else {
-            Item::RegularField(field)
+            Item::RegularField(Box::new(field))
         },
     );
     items
@@ -227,7 +234,7 @@ fn regular_parser_func(ty: &syn::Type) -> syn::Expr {
 
     syn::Expr::Path(syn::ExprPath {
         attrs: vec![],
-        qself: qself,
+        qself,
         path: syn::Path {
             leading_colon: None,
             segments,
@@ -253,7 +260,7 @@ fn regular_serializer_func(ty: &syn::Type) -> syn::Expr {
 
     syn::Expr::Path(syn::ExprPath {
         attrs: vec![],
-        qself: qself,
+        qself,
         path: syn::Path {
             leading_colon: None,
             segments,
@@ -424,7 +431,7 @@ fn item_to_field(item: Item) -> Option<Vec<syn::Field>> {
                 colon_token: None,
             }]),
             Item::RegularField(field) => Some(vec![if !will_optionize {
-                field
+                *field
             } else {
                 syn::Field {
                     attrs: field.attrs,
@@ -441,7 +448,7 @@ fn item_to_field(item: Item) -> Option<Vec<syn::Field>> {
                     .flatten()
                     .collect(),
             ),
-            Item::CustomParsed(field, _, _) => Some(vec![field]),
+            Item::CustomParsed(field, _, _) => Some(vec![*field]),
         }
     }
     inner(item, false)
@@ -477,7 +484,7 @@ fn simple_pattern(ident: syn::Ident) -> syn::Pat {
         attrs: vec![],
         by_ref: None,
         mutability: None,
-        ident: ident,
+        ident,
         subpat: None,
     })
 }
@@ -486,7 +493,7 @@ fn simple_path(ident: syn::Ident) -> syn::Path {
     syn::Path {
         leading_colon: None,
         segments: std::iter::once(syn::PathSegment {
-            ident: ident.clone(),
+            ident,
             arguments: syn::PathArguments::None,
         })
         .collect::<syn::punctuated::Punctuated<_, syn::Token![::]>>(),
@@ -560,7 +567,7 @@ fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
                 syn::Stmt::Local(syn::Local {
                     attrs: vec![],
                     let_token: Default::default(),
-                    init: Some((Default::default(), Box::new(to_wrap.clone()))),
+                    init: Some((Default::default(), Box::new(to_wrap))),
                     semi_token: Default::default(),
                     pat: pattern(),
                 }),
@@ -598,22 +605,22 @@ fn offset_incr_expr(to_wrap: syn::Expr) -> syn::Expr {
 
 fn align_stmt(
     alignment: syn::LitInt,
-    offset_expr: &Box<syn::Expr>,
-    align_func: &Box<syn::Expr>,
+    offset_expr: &syn::Expr,
+    align_func: &syn::Expr,
 ) -> syn::Stmt {
     syn::Stmt::Semi(
         syn::Expr::Assign(syn::ExprAssign {
             attrs: vec![],
             eq_token: syn::Token!(=)(proc_macro2::Span::call_site()),
-            left: offset_expr.clone(),
+            left: Box::new(offset_expr.clone()),
             right: Box::new(syn::Expr::Call(syn::ExprCall {
                 attrs: vec![],
-                func: align_func.clone(),
+                func: Box::new(align_func.clone()),
                 paren_token: syn::token::Paren {
                     span: proc_macro2::Span::call_site(),
                 },
                 args: vec![
-                    (**offset_expr).clone(),
+                    offset_expr.clone(),
                     syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Int(alignment),
                         attrs: vec![],
@@ -627,11 +634,11 @@ fn align_stmt(
     )
 }
 
-fn pad_stmt(padding: syn::LitInt, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
+fn pad_stmt(padding: syn::LitInt, offset_expr: &syn::Expr) -> syn::Stmt {
     syn::Stmt::Semi(
         syn::Expr::AssignOp(syn::ExprAssignOp {
             attrs: vec![],
-            left: offset_expr.clone(),
+            left: Box::new(offset_expr.clone()),
             op: syn::BinOp::AddEq(Default::default()),
             right: Box::new(syn::Expr::Lit(syn::ExprLit {
                 attrs: vec![],
@@ -644,9 +651,9 @@ fn pad_stmt(padding: syn::LitInt, offset_expr: &Box<syn::Expr>) -> syn::Stmt {
 
 fn item_to_decl(
     item: Item,
-    offset_expr: &Box<syn::Expr>,
-    align_func: &Box<syn::Expr>,
-    field_idents: &Vec<syn::Ident>,
+    offset_expr: &syn::Expr,
+    align_func: &syn::Expr,
+    field_idents: &[syn::Ident],
 ) -> syn::Stmt {
     match item {
         Item::Align(alignment) => align_stmt(alignment, offset_expr, align_func),
@@ -658,7 +665,7 @@ fn item_to_decl(
             init: Some((
                 syn::Token!(=)(proc_macro2::Span::call_site()),
                 Box::new(offset_incr_expr(question_mark_operator_expr(
-                    regular_parser_expr(field),
+                    regular_parser_expr(*field),
                 ))),
             )),
             semi_token: Default::default(),
@@ -669,12 +676,12 @@ fn item_to_decl(
             let_token: syn::Token!(let)(proc_macro2::Span::call_site()),
             pat: simple_pattern(field.ident.clone().unwrap()),
             init: Some((syn::Token!(=)(proc_macro2::Span::call_site()), {
-                let syn::Field { ty, ident, .. } = field;
+                let syn::Field { ty, ident, .. } = *field;
                 Box::new(offset_incr_expr(question_mark_operator_expr(
                     generic_parser_expr(
-                        parser_type,
+                        *parser_type,
                         ty,
-                        include_fields(data_expr, field_idents, false, Some(&ident.unwrap())),
+                        include_fields(*data_expr, field_idents, false, Some(&ident.unwrap())),
                     ),
                 )))
             })),
@@ -684,7 +691,7 @@ fn item_to_decl(
         Item::FieldWithEndianness(_, ident, (endianness, ty)) => syn::Stmt::Local(syn::Local {
             attrs: vec![],
             let_token: Default::default(),
-            pat: simple_pattern(ident.clone()),
+            pat: simple_pattern(ident),
             init: Some((
                 Default::default(),
                 Box::new(offset_incr_expr(question_mark_operator_expr(pod_expr(
@@ -711,7 +718,7 @@ fn item_to_decl(
                     Default::default(),
                     Box::new(conditional_expr(
                         items,
-                        include_fields(condition, field_idents, false, Some(&ident)),
+                        include_fields(*condition, field_idents, false, Some(&ident)),
                         offset_expr,
                         align_func,
                         field_idents,
@@ -797,13 +804,13 @@ fn field_with_endianness_stmt(
     ident: syn::Ident,
     endianness: Endianness,
     ty: syn::Ident,
-    offset_expr: &Box<syn::Expr>,
+    offset_expr: &syn::Expr,
     unwrap: bool,
 ) -> syn::Stmt {
     syn::Stmt::Semi(
         syn::Expr::AssignOp(syn::ExprAssignOp {
             attrs: vec![],
-            left: offset_expr.clone(),
+            left: Box::new(offset_expr.clone()),
             op: syn::BinOp::AddEq(Default::default()),
             right: Box::new(generic_serialize(
                 ident,
@@ -817,11 +824,11 @@ fn field_with_endianness_stmt(
     )
 }
 
-fn regular_field_stmt(field: syn::Field, offset_expr: &Box<syn::Expr>, unwrap: bool) -> syn::Stmt {
+fn regular_field_stmt(field: syn::Field, offset_expr: &syn::Expr, unwrap: bool) -> syn::Stmt {
     syn::Stmt::Semi(
         syn::Expr::AssignOp(syn::ExprAssignOp {
             attrs: vec![],
-            left: offset_expr.clone(),
+            left: Box::new(offset_expr.clone()),
             op: syn::BinOp::AddEq(Default::default()),
             right: Box::new(generic_serialize(
                 field.ident.unwrap(),
@@ -867,14 +874,14 @@ fn custom_parsed_stmt(
     field: syn::Field,
     parser: syn::Type,
     meta_expr: syn::Expr,
-    offset_expr: &Box<syn::Expr>,
-    field_idents: &Vec<syn::Ident>,
+    offset_expr: &syn::Expr,
+    field_idents: &[syn::Ident],
     unwrap: bool,
 ) -> syn::Stmt {
     syn::Stmt::Semi(
         syn::Expr::AssignOp(syn::ExprAssignOp {
             attrs: vec![],
-            left: offset_expr.clone(),
+            left: Box::new(offset_expr.clone()),
             op: syn::BinOp::AddEq(Default::default()),
             right: Box::new(generic_serialize(
                 field.ident.unwrap(),
@@ -888,12 +895,12 @@ fn custom_parsed_stmt(
     )
 }
 
-fn conditional_stmt<'a>(
+fn conditional_stmt(
     items: Vec<Item>,
     cond: syn::Expr,
-    offset_expr: &Box<syn::Expr>,
-    align_func: &Box<syn::Expr>,
-    field_idents: &Vec<syn::Ident>,
+    offset_expr: &syn::Expr,
+    align_func: &syn::Expr,
+    field_idents: &[syn::Ident],
 ) -> syn::Stmt {
     syn::Stmt::Expr(syn::Expr::If(syn::ExprIf {
         attrs: vec![],
@@ -910,11 +917,11 @@ fn conditional_stmt<'a>(
     }))
 }
 
-fn item_to_stmt<'a>(
+fn item_to_stmt(
     item: Item,
-    offset_expr: &Box<syn::Expr>,
-    align_func: &Box<syn::Expr>,
-    field_idents: &Vec<syn::Ident>,
+    offset_expr: &syn::Expr,
+    align_func: &syn::Expr,
+    field_idents: &[syn::Ident],
     unwrap: bool,
 ) -> syn::Stmt {
     match item {
@@ -923,12 +930,17 @@ fn item_to_stmt<'a>(
         Item::FieldWithEndianness(_, ident, (endianness, ty)) => {
             field_with_endianness_stmt(ident, endianness, ty, offset_expr, unwrap)
         }
-        Item::RegularField(field) => regular_field_stmt(field, offset_expr, unwrap),
-        Item::CustomParsed(field, parser, meta_expr) => {
-            custom_parsed_stmt(field, parser, meta_expr, offset_expr, field_idents, unwrap)
-        }
+        Item::RegularField(field) => regular_field_stmt(*field, offset_expr, unwrap),
+        Item::CustomParsed(field, parser, meta_expr) => custom_parsed_stmt(
+            *field,
+            *parser,
+            *meta_expr,
+            offset_expr,
+            field_idents,
+            unwrap,
+        ),
         Item::Conditional(items, cond) => {
-            conditional_stmt(items, cond, offset_expr, align_func, field_idents)
+            conditional_stmt(items, *cond, offset_expr, align_func, field_idents)
         }
     }
 }
@@ -936,9 +948,9 @@ fn item_to_stmt<'a>(
 fn conditional_expr(
     items: Vec<Item>,
     condition: syn::Expr,
-    offset_expr: &Box<syn::Expr>,
-    align_func: &Box<syn::Expr>,
-    field_idents: &Vec<syn::Ident>,
+    offset_expr: &syn::Expr,
+    align_func: &syn::Expr,
+    field_idents: &[syn::Ident],
 ) -> syn::Expr {
     syn::Expr::If(syn::ExprIf {
         attrs: vec![],
@@ -1226,10 +1238,10 @@ pub fn sbp(attr: TokenStream, input: TokenStream) -> TokenStream {
         match arg {
             proc_macro2::TokenTree::Ident(ident) => {
                 if ident == &syn::Ident::new("parsable", proc_macro2::Span::call_site()) {
-                    output.extend(parsable(input.clone().into()));
+                    output.extend(parsable(input.clone()));
                 } else if ident == &syn::Ident::new("serializable", proc_macro2::Span::call_site())
                 {
-                    output.extend(serializable(input.clone().into()));
+                    output.extend(serializable(input.clone()));
                 }
             }
             _ => panic!(),
