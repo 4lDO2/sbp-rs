@@ -8,7 +8,7 @@ repository = "https://github.com/4lDO2/sbp-rs"
 documentation = "https://docs.rs/sbp"
 readme = "../README.md"
 categories = ["parsing"]
-keywords = ["parser", "parsing", "serializer", "serializing", "macros", "binary"]
+keywords = ["parsing", "serializing", "macros", "binary"]
 description = "A derive-like macro for declaring binary parsable structs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
