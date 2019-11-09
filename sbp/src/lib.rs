@@ -73,6 +73,31 @@ pub trait ParseKnownSize<'a>: ParserKnownSize<'a, Self> + Parse<'a> {}
 /// A parser that takes an arbitrary amount of bytes.
 pub struct Take;
 
+/// A parser that repeats the same parser multiple times.
+pub struct Repeat<P> {
+    _marker: std::marker::PhantomData<P>
+}
+
+impl<'a, P, T> Parser<'a, Vec<T>> for Repeat<P>
+where
+    P: Parser<'a, T>,
+    P::Meta: Default,
+{
+    type Error = P::Error;
+    type Meta = usize;
+
+    fn parse(count: usize, bytes: &'a [u8]) -> Result<(Vec<T>, usize), Self::Error> {
+        let mut offset = 0;
+
+        let vector = (0..count).map(|_| {
+            let (value, additional_bytes) = P::parse(Default::default(), &bytes[offset..])?;
+            offset += additional_bytes;
+            Ok(value)
+        }).collect::<Result<Vec<_>, P::Error>>()?;
+        Ok((vector, offset))
+    }
+}
+
 impl<'a, T> Parser<'a, T> for Take
 where
     T: From<&'a [u8]>,
@@ -401,5 +426,26 @@ mod tests {
         let (subrange, len): (&[u8], usize) = Take::parse(13, bytes).unwrap();
         assert_eq!(len, 13);
         assert_eq!(subrange, b"Hello, world!");
+    }
+
+    #[test]
+    fn repeat_struct() {
+        use crate::{Le, Parser, Repeat};
+
+        let bytes = [
+            0x00, 0x0F, 0xF0, 0xFF,
+            0x00, 0x0E, 0xE0, 0xEE,
+            0x00, 0x0D, 0xD0, 0xDD,
+            0x00, 0x0C, 0xC0, 0xCC,
+        ];
+
+        let (nums, len): (Vec<u32>, usize) = Repeat::<Le>::parse(4, &bytes).unwrap();
+        assert_eq!(len, bytes.len());
+        assert_eq!(&nums[..], &[
+            0xFFF00F00,
+            0xEEE00E00,
+            0xDDD00D00,
+            0xCCC00C00,
+        ]);
     }
 }
