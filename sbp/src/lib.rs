@@ -6,6 +6,28 @@ use std::{
 #[cfg(feature = "derive")]
 pub use sbp_derive::sbp;
 
+#[cfg(feature = "derive")]
+pub trait DeriveError: OutOfSpaceError + std::error::Error {}
+
+impl<T> DeriveError for T where T: OutOfSpaceError + std::error::Error {}
+
+#[cfg(feature = "derive")]
+impl OutOfSpaceError for Box<dyn DeriveError> {
+    fn additional_required_bytes(&self) -> Option<NonZeroUsize> {
+        <Box<dyn DeriveError> as std::ops::Deref>::deref(self).additional_required_bytes()
+    }
+}
+
+#[cfg(feature = "derive")]
+impl std::error::Error for Box<dyn DeriveError> {}
+
+#[cfg(feature = "derive")]
+impl From<BasicOutOfSpaceError> for Box<dyn DeriveError> {
+    fn from(basic: BasicOutOfSpaceError) -> Self {
+        Box::new(basic)
+    }
+}
+
 /// An error that may be caused by insufficient bytes.
 pub trait OutOfSpaceError {
     fn additional_required_bytes(&self) -> Option<NonZeroUsize>;
@@ -298,6 +320,13 @@ impl<T> OutOfSpaceError for ParseBitflagsError<T> {
             Self::InsufficientSize(err) => err.additional_required_bytes(),
             _ => None,
         }
+    }
+}
+
+#[cfg(all(feature = "bitflags", feature = "derive"))]
+impl<T: std::fmt::LowerHex + std::fmt::Debug + 'static> From<ParseBitflagsError<T>> for Box<dyn DeriveError> {
+    fn from(err: ParseBitflagsError<T>) -> Self {
+        Box::new(err)
     }
 }
 

@@ -27,3 +27,4 @@ syn = { version = "1", features = ["extra-traits", "full"] }
 
 [dev-dependencies]
 sbp = { path = "../sbp" }
+bitflags = "1.2"

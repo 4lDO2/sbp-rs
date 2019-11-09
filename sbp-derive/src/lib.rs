@@ -1142,7 +1142,7 @@ fn parsable(input: TokenStream) -> TokenStream {
         #[allow(unused_parens, unused_variables)]
         impl<'a> ::sbp::Parser<'a, #ident> for #ident {
             type Meta = ();
-            type Error = ::sbp::BasicOutOfSpaceError;
+            type Error = Box<::sbp::DeriveError>;
 
             fn parse(_: Self::Meta, __sbp_proc_macro_bytes: &'a [u8]) -> Result<(Self, usize), Self::Error> {
                 let mut __sbp_proc_macro_offset = 0;
@@ -1201,7 +1201,7 @@ fn serializable(input: TokenStream) -> TokenStream {
         #[allow(unused_parens, unused_variables)]
         impl<'a> ::sbp::Serializer<'a, #ident> for #ident {
             type Meta = ();
-            type Error = ::sbp::BasicOutOfSpaceError;
+            type Error = Box<dyn ::sbp::DeriveError>;
 
             fn serialize(__sbp_proc_macro_data: &Self, _: Self::Meta, __sbp_proc_macro_bytes: &'a mut [u8]) -> Result<usize, Self::Error> {
                 let mut __sbp_proc_macro_offset = 0;

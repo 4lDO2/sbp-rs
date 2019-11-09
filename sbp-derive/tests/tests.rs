@@ -275,3 +275,35 @@ fn conditional_serializing() {
         );
     }
 }
+
+#[test]
+fn bitflags_invocation() {
+    sbp::parsable_bitflags! {
+        pub struct Flags: Le<u16> {
+            const A = 0x1;
+            const B = 0x2;
+        }
+    }
+
+    #[sbp(parsable)]
+    #[derive(Debug, PartialEq)]
+    struct Struct {
+        len: Le<u16>,
+        offset: Le<u32>,
+        flags: Flags,
+    }
+
+    let bytes = [
+        0xFA, 0xCE,
+        0xDE, 0xAD, 0xBE, 0xEF,
+        0x03, 0x00,
+    ];
+
+    let (s, len) = Struct::parse((), &bytes).unwrap();
+    assert_eq!(len, bytes.len());
+    assert_eq!(s, Struct {
+        len: 0xCEFA,
+        offset: 0xEFBEADDE,
+        flags: Flags::A | Flags::B,
+    });
+}
